@@ -1,0 +1,99 @@
+# CPA test configuration for the llm-tracing e2e harness (v8 layout).
+# run.sh renders this template into run/config.yaml, replacing __E2E_RUN__ with the absolute
+# run directory and __PLUGINS_ENABLED__ with true/false. CPA may rewrite the rendered copy
+# (for example it hashes the management secret), so the template itself is never passed to CPA.
+config-version: 8
+
+server:
+  host: "127.0.0.1"
+  port: 8318
+  response-compression:
+    enabled: false
+
+management:
+  allow-remote: false
+  # Own secret so the usage queue can be inspected (GET /v8/management/observability/usage/queue).
+  secret-key: "e2e-mgmt-secret"
+  disable-control-panel: true
+  disable-auto-update-panel: true
+
+access:
+  api-keys:
+    - "e2e-client-key-0001"
+
+routing:
+  # fill-first + group priorities make credential order deterministic:
+  # higher priority is always picked first; within a request each credential is tried once per round.
+  strategy: "fill-first"
+  session-affinity: false
+  retry:
+    # One additional round after round 0 exhausts all eligible credentials.
+    request-retry: 1
+    max-retry-credentials: 0
+    # Bound the wait between rounds (the 429 sends Retry-After: 1).
+    max-retry-interval: 5
+  cooldown:
+    # No cooldown: the mock-429 credential stays eligible, so every retry-scenario request
+    # deterministically hits mock-429 first, independent of earlier requests.
+    disable-cooling: true
+    save-cooldown-status: false
+
+oauth:
+  auth-dir: "__E2E_RUN__/auths"
+
+observability:
+  logs:
+    debug: true
+    logging-to-file: false
+    request-log: false
+  usage:
+    usage-statistics-enabled: true
+    redis-usage-queue-retention-seconds: 600
+
+api-keys:
+  openai-compatibility:
+    # Plain success path. Also serves the second (fallback) leg of the retry scenario, and an alias.
+    - name: "mockok"
+      priority: 0
+      base-url: "http://127.0.0.1:18080/v1"
+      keys:
+        - api-key: "mock-ok"
+      models:
+        - name: "mock-gpt"
+        - name: "mock-retry"
+        - name: "mock-gpt-upstream"
+          alias: "mock-alias"
+
+    # Highest priority for mock-retry and mock-fail: always the first attempt. Always returns 429.
+    - name: "mocklimited"
+      priority: 10
+      disable-cooling: true
+      base-url: "http://127.0.0.1:18080/v1"
+      keys:
+        - api-key: "mock-429"
+      models:
+        - name: "mock-retry"
+        - name: "mock-fail"
+
+    # Second attempt for mock-fail. Always returns 500.
+    - name: "mockbroken"
+      priority: 5
+      disable-cooling: true
+      base-url: "http://127.0.0.1:18080/v1"
+      keys:
+        - api-key: "mock-500"
+      models:
+        - name: "mock-fail"
+
+plugins:
+  enabled: __PLUGINS_ENABLED__
+  dir: "__E2E_RUN__/plugins"
+  configs:
+    llm-tracing:
+      enabled: true
+      priority: 1
+      endpoint: "http://127.0.0.1:4318/v1/traces"
+      service_name: "cpa-e2e"
+      sample_rate: 1.0
+      completion_grace_ms: 500
+      flush_interval_ms: 200

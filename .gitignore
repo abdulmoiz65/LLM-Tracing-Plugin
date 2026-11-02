@@ -1,0 +1,6 @@
+dist/
+stage/
+*.h
+*.dll
+*.so
+*.dylib
