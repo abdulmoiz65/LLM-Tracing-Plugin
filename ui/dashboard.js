@@ -10,6 +10,9 @@
   const REFRESH_MS = 5000;
   const LIST_LIMIT = 100;
   const SLOW_MS = 10000;
+  const SESSION_LIMIT = 20;
+  const RANGE_KEY = 'llm-tracing.range';
+  const RANGE_LABELS = { '15m': 'last 15 minutes', '1h': 'last hour', '6h': 'last 6 hours', '24h': 'last 24 hours', '7d': 'last 7 days', all: 'whole history' };
 
   // The page is served at <prefix>/v0/resource/plugins/<id>/dashboard; the
   // API lives on the same origin under <prefix>/v0/management/.
@@ -25,6 +28,7 @@
   let busy = false;
   let selectedId = '';
   let modelDebounce = null;
+  let sessionFilter = null; // {id, label} when the table shows one session
 
   // ---------- small DOM helpers ----------
   function el(tag, text, className) {
@@ -84,11 +88,66 @@
     const sameDay = d.toDateString() === now.toDateString();
     return sameDay ? d.toLocaleTimeString() : d.toLocaleString();
   }
+  // fmtPercent keeps one decimal near the ends so 99.7% never shows as 100%.
   function fmtPercent(rate) {
-    return (num(rate) * 100).toFixed(num(rate) > 0 && num(rate) < 0.1 ? 1 : 0) + '%';
+    const r = num(rate);
+    const decimals = (r > 0 && r < 0.1) || (r > 0.99 && r < 1) ? 1 : 0;
+    let text = (r * 100).toFixed(decimals);
+    if (r < 1 && text === '100.0') text = '99.9';
+    return text + '%';
   }
+  // fmtUSD renders $0.0042, $0.42, $12.34, $1.2k.
+  function fmtUSD(value) {
+    const n = num(value);
+    if (n === 0) return '$0';
+    if (n < 0.01) return '$' + n.toFixed(4);
+    if (n < 1000) return '$' + n.toFixed(2);
+    return '$' + fmtCompact(n);
+  }
+  function costText(t) {
+    const priced = t.priced !== false;
+    if (!priced && num(t.cost_usd) === 0) return '-';
+    return fmtUSD(t.cost_usd) + (priced ? '' : '+');
+  }
+  function costTitle(t) {
+    const parts = ['Estimated at API list prices' + (str(t.price_source) ? ' (' + str(t.price_source) + ')' : '')];
+    const saved = num(t.cost_without_cache_usd) - num(t.cost_usd);
+    if (saved > 0) parts.push('cache saved ' + fmtUSD(saved) + ' (would be ' + fmtUSD(t.cost_without_cache_usd) + ')');
+    if (t.priced === false) parts.push('no price for some model; add it under pricing in the plugin config');
+    return parts.join('; ');
+  }
+  // ctxGauge renders a context-window gauge; warn at 70%, bad at 90%.
+  function ctxGauge(tokens, windowSize, used) {
+    const box = el('div', undefined, 'ctx');
+    tokens = num(tokens);
+    windowSize = num(windowSize);
+    if (tokens <= 0) {
+      box.append(el('span', '-', 'ctx-text'));
+      return box;
+    }
+    if (windowSize <= 0) {
+      box.append(el('span', fmtCompact(tokens) + ' (window unknown)', 'ctx-text'));
+      box.title = 'Set context_windows in the plugin config for this model.';
+      return box;
+    }
+    const ratio = Math.min(1, Math.max(0, num(used)));
+    if (ratio >= 0.9) box.classList.add('bad');
+    else if (ratio >= 0.7) box.classList.add('warn');
+    const track = el('div', undefined, 'ctx-track');
+    const fill = el('div', undefined, 'ctx-fill');
+    fill.style.width = Math.max(ratio * 100, 1) + '%';
+    track.append(fill);
+    box.append(track, el('span', fmtCompact(tokens) + ' / ' + fmtCompact(windowSize) + ' · ' + fmtPercent(ratio), 'ctx-text'));
+    box.title = fmtInt(tokens) + ' of ' + fmtInt(windowSize) + ' context tokens used by the prompt' +
+      (ratio >= 0.9 ? ' - nearly full: start a new conversation or compact' : ratio >= 0.7 ? ' - getting full' : '');
+    return box;
+  }
+  function currentRange() {
+    return $('f-range').value || 'all';
+  }
+
   function isError(t) {
-    return str(t.outcome) !== 'succeeded' || num(t.status_code) >= 400;
+    return str(t.outcome) !== 'canceled' && (str(t.outcome) !== 'succeeded' || num(t.status_code) >= 400);
   }
   function statusBadge(t) {
     const outcome = str(t.outcome) || 'unknown';
@@ -208,7 +267,10 @@
     const store = storage();
     if (store) store.removeItem(SESSION_KEY);
     selectedId = '';
+    sessionFilter = null;
+    renderSessionChip();
     $('rows').replaceChildren();
+    $('session-rows').replaceChildren();
     $('detail').hidden = true;
     $('app').hidden = true;
     $('connbar').hidden = true;
@@ -249,6 +311,8 @@
     const provider = $('f-provider').value;
     if (provider) params.set('provider', provider.slice(0, 200));
     if ($('f-slow').checked) params.set('min_ms', String(SLOW_MS));
+    params.set('range', currentRange());
+    if (sessionFilter) params.set('session', sessionFilter.id);
     return '/traces?' + params.toString();
   }
 
@@ -256,12 +320,17 @@
     if (busy) return;
     busy = true;
     try {
-      const [summary, list] = await Promise.all([api('/summary'), api(listQuery())]);
+      const range = encodeURIComponent(currentRange());
+      const [summary, list, sessions] = await Promise.all([
+        api('/summary?range=' + range),
+        api(listQuery()),
+        api('/sessions?range=' + range + '&limit=' + SESSION_LIMIT),
+      ]);
       renderSummary(summary);
+      renderSessions(Array.isArray(sessions.sessions) ? sessions.sessions : []);
       renderTraces(Array.isArray(list.traces) ? list.traces : []);
       if (selectedId) await loadDetail(selectedId, false);
-      $('status-line').textContent = 'Updated ' + new Date().toLocaleTimeString() +
-        ' - ' + fmtInt(summary.stored_traces) + ' of ' + fmtInt(summary.capacity) + ' recent traces kept in memory';
+      $('status-line').textContent = 'Updated ' + new Date().toLocaleTimeString() + ' - ' + historyText(summary);
     } catch (err) {
       if (throwErrors) throw err;
       handleError(err);
@@ -270,12 +339,46 @@
     }
   }
 
+  function historyText(s) {
+    const h = s.history && typeof s.history === 'object' ? s.history : {};
+    const parts = [fmtInt(s.stored_traces) + ' request(s) in history'];
+    if (h.enabled) {
+      parts.push(h.loading ? 'loading saved history...' : 'saved to disk for ' + fmtInt(h.days) + ' day(s)');
+      if (str(h.last_error)) parts.push('save error: ' + str(h.last_error));
+    } else {
+      parts.push('not saved to disk (save_history: false), lost on restart');
+    }
+    parts.push('attempt details for the newest ' + fmtInt(s.detail_traces));
+    return parts.join(' · ');
+  }
+
   // ---------- rendering ----------
   function renderSummary(s) {
     $('version').textContent = s.version ? 'v' + str(s.version) : '';
     $('m-requests').textContent = fmtInt(s.requests);
+    const rangeLabel = RANGE_LABELS[str(s.range)] || RANGE_LABELS[currentRange()] || '';
+    $('m-requests-hint').textContent = rangeLabel;
+    const line = $('range-line');
+    if (num(s.requests) > 0 && str(s.oldest_trace_at)) {
+      line.textContent = 'Cards, sessions and requests below cover the ' + rangeLabel.replace(/^all/, 'requests') + ': ' +
+        fmtInt(s.requests) + ' request(s) from ' + fmtTime(s.oldest_trace_at) + ' to ' + fmtTime(s.newest_trace_at) + '.';
+    } else if (num(s.stored_traces) > 0) {
+      line.textContent = 'No requests in the ' + rangeLabel + '. ' + fmtInt(s.stored_traces) + ' older request(s) are kept - choose a longer time range.';
+    } else {
+      line.textContent = '';
+    }
+    const cost = $('m-cost');
+    cost.textContent = num(s.requests) > 0 ? fmtUSD(s.cost_usd) + (num(s.unpriced_requests) > 0 ? '+' : '') : '-';
+    const savings = num(s.cache_savings_usd);
+    const costHint = $('m-cost-hint');
+    costHint.textContent = savings > 0 ? 'cache saved ' + fmtUSD(savings) : 'at API list prices';
+    costHint.classList.toggle('ok', savings > 0);
+    const unpriced = Array.isArray(s.unpriced_models) ? s.unpriced_models.map(str).filter((m) => m) : [];
+    cost.title = 'Estimated at API list prices (' + str(s.prices_as_of) + '). Subscription (OAuth) accounts are not billed per token; ' +
+      'this is what the same tokens would cost through the API. Without the prompt cache: ' + fmtUSD(s.cost_without_cache_usd) + '.' +
+      (unpriced.length ? ' No price for: ' + unpriced.join(', ') + ' (' + fmtInt(s.unpriced_requests) + ' request(s) only partly counted). Add them under pricing in the plugin config.' : '');
     $('m-errors').textContent = fmtPercent(s.error_rate);
-    $('m-errors-hint').textContent = fmtInt(s.errors) + ' failed';
+    $('m-errors-hint').textContent = fmtInt(s.errors) + ' failed' + (num(s.canceled) > 0 ? ' · ' + fmtInt(s.canceled) + ' canceled (not counted)' : '');
     $('m-latency').textContent = fmtDuration(s.avg_latency_ms) + ' / ' + fmtDuration(s.p95_latency_ms);
     $('m-tokens').textContent = fmtCompact(s.total_input_tokens) + ' / ' + fmtCompact(s.output_tokens);
     $('m-tokens').title = inputBreakdown(s) + '; ' + fmtInt(s.output_tokens) + ' output tokens';
@@ -327,6 +430,72 @@
     select.value = current;
   }
 
+  function renderSessions(sessions) {
+    const rows = $('session-rows');
+    const fragment = document.createDocumentFragment();
+    for (const s of sessions) {
+      const id = str(s.id);
+      const tr = el('tr');
+      tr.tabIndex = 0;
+      tr.dataset.id = id;
+      if (sessionFilter && sessionFilter.id === id) tr.className = 'selected';
+      const when = el('td', fmtTime(s.last_at), 'time');
+      when.append(el('span', (s.active ? 'active · ' : '') + 'started ' + fmtTime(s.started_at), 'session-tag'));
+      tr.append(when);
+      const model = el('td', str(s.model) || '(none)', 'model');
+      model.title = str(s.serving_model) && str(s.serving_model) !== str(s.model) ? 'Served by ' + str(s.serving_model) : str(s.model);
+      tr.append(model);
+      const account = el('td', str(s.account) || '-', 'account');
+      account.title = str(s.account);
+      tr.append(account);
+      const notes = [];
+      if (num(s.errors) > 0) notes.push(fmtInt(s.errors) + ' failed');
+      if (num(s.canceled) > 0) notes.push(fmtInt(s.canceled) + ' canceled');
+      const requests = el('td', fmtInt(s.requests) + (notes.length ? ' (' + notes.join(', ') + ')' : ''), 'num');
+      if (num(s.errors) > 0) requests.classList.add('failed-count');
+      tr.append(requests);
+      const ctx = el('td', undefined, 'ctx-cell');
+      const gauge = ctxGauge(s.context_tokens, s.context_window, s.context_used);
+      if (num(s.requests_until_full) >= 0 && num(s.context_window) > 0) {
+        gauge.title += '. At the current growth, about ' + fmtInt(s.requests_until_full) + ' more request(s) fit.';
+      }
+      ctx.append(gauge);
+      tr.append(ctx);
+      const growth = el('td', num(s.growth_per_request) > 0 ? '+' + fmtCompact(s.growth_per_request) + '/req' : '-', 'num opt-2');
+      growth.title = 'Prompt grew from ' + fmtInt(s.first_context_tokens) + ' to ' + fmtInt(s.context_tokens) + ' tokens (peak ' + fmtInt(s.peak_context_tokens) + ')';
+      tr.append(growth);
+      const cost = el('td', costText(s), 'num');
+      cost.title = costTitle(s);
+      tr.append(cost);
+      tr.append(el('td', str(s.client_key) || '-', 'key opt-1'));
+      const label = str(s.model) + ' · started ' + fmtTime(s.started_at);
+      tr.addEventListener('click', () => toggleSession(id, label));
+      tr.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          toggleSession(id, label);
+        }
+      });
+      fragment.append(tr);
+    }
+    rows.replaceChildren(fragment);
+    const empty = sessions.length === 0;
+    $('sessions-empty').hidden = !empty;
+    $('sessions-wrap').hidden = empty;
+  }
+
+  function toggleSession(id, label) {
+    sessionFilter = sessionFilter && sessionFilter.id === id ? null : { id, label };
+    renderSessionChip();
+    refresh(false);
+  }
+
+  function renderSessionChip() {
+    $('session-chip').hidden = !sessionFilter;
+    $('session-chip-text').textContent = sessionFilter ? 'Session: ' + sessionFilter.label : '';
+    for (const row of $('session-rows').children) row.classList.toggle('selected', !!sessionFilter && row.dataset.id === sessionFilter.id);
+  }
+
   function renderTraces(traces) {
     const rows = $('rows');
     const fragment = document.createDocumentFragment();
@@ -336,7 +505,9 @@
       tr.tabIndex = 0;
       tr.dataset.id = id;
       if (id === selectedId) tr.className = 'selected';
-      tr.append(el('td', fmtTime(t.started_at), 'time'));
+      const time = el('td', fmtTime(t.started_at), 'time');
+      if (num(t.session_requests) > 1) time.append(el('span', 'session request ' + fmtInt(t.session_seq) + ' of ' + fmtInt(t.session_requests), 'session-tag'));
+      tr.append(time);
       const model = el('td', str(t.requested_model) || '(none)', 'model');
       model.title = str(t.requested_model);
       tr.append(model);
@@ -359,6 +530,12 @@
       const cache = el('td', cacheText(t), 'cache opt-2');
       if (num(t.total_input_tokens) > 0) cache.title = 'Cache hit rate ' + fmtPercent(t.cache_hit_rate);
       tr.append(cache);
+      const ctx = el('td', undefined, 'ctx-cell opt-2');
+      ctx.append(ctxGauge(t.context_tokens, t.context_window, t.context_used));
+      tr.append(ctx);
+      const cost = el('td', costText(t), 'num');
+      cost.title = costTitle(t);
+      tr.append(cost);
       tr.append(el('td', str(t.client_key) || '-', 'key opt-1'));
       tr.addEventListener('click', () => select(id));
       tr.addEventListener('keydown', (event) => {
@@ -374,7 +551,7 @@
     $('empty').hidden = !empty;
     $('table-wrap').hidden = empty;
     if (empty) {
-      const filtered = $('f-status').value !== 'all' || $('f-model').value.trim() || $('f-provider').value || $('f-slow').checked;
+      const filtered = $('f-status').value !== 'all' || $('f-model').value.trim() || $('f-provider').value || $('f-slow').checked || !!sessionFilter;
       $('empty').firstElementChild.textContent = filtered ? 'No traces match these filters' : 'No traces yet';
     }
   }
@@ -439,6 +616,11 @@
     metaItem(meta, 'Input breakdown', fmtInt(uncachedOf(t)) + ' uncached · ' + fmtInt(t.cache_read_tokens) +
       ' cache read · ' + fmtInt(t.cache_creation_tokens) + ' cache write');
     metaItem(meta, 'Cache hit rate', num(t.total_input_tokens) > 0 ? fmtPercent(t.cache_hit_rate) : '-');
+    metaItem(meta, 'Est. cost', costText(t) + (num(t.cost_without_cache_usd) > num(t.cost_usd) ? ' (without cache ' + fmtUSD(t.cost_without_cache_usd) + ')' : ''));
+    metaItem(meta, 'Context used', num(t.context_window) > 0 && num(t.context_tokens) > 0
+      ? fmtInt(t.context_tokens) + ' of ' + fmtInt(t.context_window) + ' (' + fmtPercent(t.context_used) + ')'
+      : (num(t.context_tokens) > 0 ? fmtInt(t.context_tokens) + ' (window unknown)' : ''));
+    metaItem(meta, 'Session', num(t.session_requests) > 0 ? 'request ' + fmtInt(t.session_seq) + ' of ' + fmtInt(t.session_requests) : '');
     metaItem(meta, 'Client key', str(t.client_key), true);
 
     const error = $('d-error');
@@ -446,9 +628,15 @@
     error.hidden = !str(t.error);
 
     const spans = Array.isArray(t.spans) ? t.spans : [];
+    const more = $('d-more');
+    if (t.has_detail === false) {
+      $('d-waterfall').replaceChildren(el('p', 'Attempt details are kept only for the newest requests. This older request keeps its totals, cost and session.', 'muted'));
+      $('d-attempts').replaceChildren();
+      more.hidden = true;
+      return;
+    }
     renderWaterfall(t, spans);
     const attempts = spans.filter((s) => str(s.kind) === 'client');
-    const more = $('d-more');
     const hidden = num(t.attempt_count) - attempts.length;
     more.hidden = hidden <= 0;
     more.textContent = hidden > 0 ? hidden + ' more attempt(s) are counted but not kept in memory.' : '';
@@ -531,6 +719,7 @@
       kv(list, 'Cache hit rate', num(tok.total_input_tokens) > 0 ? fmtPercent(tok.cache_hit_rate) : '');
       kv(list, 'Output', fmtInt(tok.output_tokens));
       kv(list, 'Reasoning', num(tok.reasoning_tokens) > 0 ? fmtInt(tok.reasoning_tokens) : '');
+      kv(list, 'Est. cost', s.cost_usd !== undefined && s.cost_usd !== null ? fmtUSD(s.cost_usd) : '');
       kv(list, 'Auth type', str(a['cpa.auth_type']));
       kv(list, 'Auth index', str(a['cpa.auth_index']));
       kv(list, 'Error', str(a['cpa.error']));
@@ -595,6 +784,20 @@
     $('f-status').addEventListener('change', () => refresh(false));
     $('f-slow').addEventListener('change', () => refresh(false));
     $('f-provider').addEventListener('change', () => refresh(false));
+    $('f-range').addEventListener('change', () => {
+      const rangeStore = storage();
+      try {
+        if (rangeStore) rangeStore.setItem(RANGE_KEY, currentRange());
+      } catch (err) {
+        // Storage may be blocked; the choice then lasts for this page only.
+      }
+      refresh(false);
+    });
+    $('session-clear').addEventListener('click', () => {
+      sessionFilter = null;
+      renderSessionChip();
+      refresh(false);
+    });
     $('f-model').addEventListener('input', () => {
       clearTimeout(modelDebounce);
       modelDebounce = setTimeout(() => refresh(false), 300);
@@ -608,6 +811,13 @@
       schedule();
     });
 
+    try {
+      const rangeStore = storage();
+      const savedRange = rangeStore ? rangeStore.getItem(RANGE_KEY) : null;
+      if (savedRange && Object.prototype.hasOwnProperty.call(RANGE_LABELS, savedRange)) $('f-range').value = savedRange;
+    } catch (err) {
+      // Storage blocked: keep the default range.
+    }
     const store = storage();
     const remembered = store ? store.getItem(SESSION_KEY) : null;
     if (remembered) {

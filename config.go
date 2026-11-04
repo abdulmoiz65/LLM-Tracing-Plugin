@@ -15,6 +15,9 @@ import (
 const (
 	minUITraces = 10
 	maxUITraces = 5000
+	// defaultDataDir is relative to the proxy's working directory, like
+	// other store plugins (plugins/<id>).
+	defaultDataDir = "plugins/llm-tracing"
 )
 
 // config is the validated plugin configuration (plugins.configs.llm-tracing).
@@ -39,6 +42,35 @@ type config struct {
 	UIShowAccountLabels bool
 	// ExportAccountLabels adds cpa.account to exported attempt spans.
 	ExportAccountLabels bool
+	// Pricing and ContextWindows extend or override the built-in tables
+	// (pricing.go), keyed by model name.
+	Pricing        map[string]modelPrice
+	ContextWindows map[string]int64
+	// SessionGap is the idle time after which a client's next request starts
+	// a new session on the Traces page.
+	SessionGap time.Duration
+	// CacheWriteTTL selects the cache write price: auto, 5m or 1h.
+	CacheWriteTTL string
+	// HistoryDays and HistoryMaxRequests bound the request history kept for
+	// the page (totals for every request; spans only for the newest
+	// UIMaxTraces). SaveHistory writes it to DataDir so it survives
+	// restarts and plugin updates.
+	HistoryDays        int
+	HistoryMaxRequests int
+	SaveHistory        bool
+	DataDir            string
+}
+
+// historyAge is the history window as a duration.
+func (c config) historyAge() time.Duration { return time.Duration(c.HistoryDays) * 24 * time.Hour }
+
+// pricer builds the cost and context-window table for this config.
+func (c config) pricer() *pricer {
+	p := newPricer(c.Pricing, c.ContextWindows)
+	if c.CacheWriteTTL != "" {
+		p.cacheTTL = c.CacheWriteTTL
+	}
+	return p
 }
 
 // active reports whether the OTLP exporter runs (plugin enabled with an endpoint).
@@ -70,6 +102,12 @@ func defaultConfig() config {
 
 		UIShowAccountLabels: true,
 		ExportAccountLabels: false,
+		SessionGap:          30 * time.Minute,
+		CacheWriteTTL:       cacheTTLAuto,
+		HistoryDays:         7,
+		HistoryMaxRequests:  20000,
+		SaveHistory:         true,
+		DataDir:             defaultDataDir,
 	}
 }
 
@@ -137,6 +175,33 @@ func parseConfig(raw []byte) (config, []string, error) {
 	intField(values, "max_queue_spans", &cfg.MaxQueueSpans, 1, 1_000_000, warn)
 	intField(values, "max_batch_spans", &cfg.MaxBatchSpans, 1, 10_000, warn)
 	intField(values, "ui_max_traces", &cfg.UIMaxTraces, minUITraces, maxUITraces, warn)
+	intField(values, "history_days", &cfg.HistoryDays, 1, 90, warn)
+	intField(values, "history_max_requests", &cfg.HistoryMaxRequests, 1000, 200_000, warn)
+	boolField(values, "save_history", &cfg.SaveHistory, warn)
+	if v, ok := values["data_dir"]; ok && v != nil {
+		if dir := scalarString(v); dir != "" {
+			if strings.ContainsRune(dir, 0) {
+				warn("data_dir: invalid path; using %s", defaultDataDir)
+			} else {
+				cfg.DataDir = dir
+			}
+		}
+	}
+	if v, ok := values["session_gap_minutes"]; ok && v != nil {
+		minutes := 30
+		intField(map[string]any{"session_gap_minutes": v}, "session_gap_minutes", &minutes, 1, 24*60, warn)
+		cfg.SessionGap = time.Duration(minutes) * time.Minute
+	}
+	if v, ok := values["cache_write_ttl"]; ok && v != nil {
+		switch ttl := strings.ToLower(scalarString(v)); ttl {
+		case cacheTTLAuto, cacheTTL5m, cacheTTL1h:
+			cfg.CacheWriteTTL = ttl
+		default:
+			warn("cache_write_ttl: expected auto, 5m or 1h")
+		}
+	}
+	cfg.Pricing = parsePricing(values["pricing"], warn)
+	cfg.ContextWindows = parseContextWindows(values["context_windows"], warn)
 	return cfg, warnings, nil
 }
 
@@ -314,4 +379,95 @@ func toBool(v any) (bool, bool) {
 	default:
 		return false, false
 	}
+}
+
+const maxConfigModels = 500
+
+// parsePricing reads `pricing: {<model>: {input, output, cache_read,
+// cache_write}}` in USD per million tokens. cache_read defaults to 10% and
+// cache_write to 125% of input. Invalid entries are skipped with a warning.
+func parsePricing(v any, warn func(string, ...any)) map[string]modelPrice {
+	out := map[string]modelPrice{}
+	if v == nil {
+		return out
+	}
+	entries, ok := v.(map[string]any)
+	if !ok {
+		warn("pricing: expected a mapping of model name to prices")
+		return out
+	}
+	for name, raw := range entries {
+		if len(out) >= maxConfigModels {
+			warn("pricing: more than %d models; the rest are ignored", maxConfigModels)
+			break
+		}
+		fields, okMap := raw.(map[string]any)
+		if !okMap || strings.TrimSpace(name) == "" {
+			warn("pricing: entry %q must be a mapping with input and output", name)
+			continue
+		}
+		rate := func(key string) (float64, bool, bool) {
+			fv, present := fields[key]
+			if !present || fv == nil {
+				return 0, false, true
+			}
+			f, okNum := toFloat(fv)
+			if !okNum || math.IsNaN(f) || math.IsInf(f, 0) || f < 0 || f > 1e6 {
+				return 0, true, false
+			}
+			return f, true, true
+		}
+		var price modelPrice
+		valid := true
+		var present bool
+		var okRate bool
+		if price.Input, present, okRate = rate("input"); !present || !okRate {
+			valid = false
+		}
+		if price.Output, present, okRate = rate("output"); !present || !okRate {
+			valid = false
+		}
+		if price.CacheRead, present, okRate = rate("cache_read"); !okRate {
+			valid = false
+		} else if !present {
+			price.CacheRead = price.Input * 0.1
+		}
+		if price.CacheWrite, present, okRate = rate("cache_write"); !okRate {
+			valid = false
+		} else if !present {
+			price.CacheWrite = price.Input * 1.25
+		}
+		if !valid {
+			warn("pricing: entry %q needs non-negative numbers for input and output (cache_read, cache_write optional)", name)
+			continue
+		}
+		out[name] = price
+	}
+	return out
+}
+
+// parseContextWindows reads `context_windows: {<model>: <tokens>}`.
+func parseContextWindows(v any, warn func(string, ...any)) map[string]int64 {
+	out := map[string]int64{}
+	if v == nil {
+		return out
+	}
+	entries, ok := v.(map[string]any)
+	if !ok {
+		warn("context_windows: expected a mapping of model name to tokens")
+		return out
+	}
+	for name, raw := range entries {
+		if len(out) >= maxConfigModels {
+			warn("context_windows: more than %d models; the rest are ignored", maxConfigModels)
+			break
+		}
+		f, okNum := toFloat(raw)
+		if !okNum || math.IsNaN(f) || f < 1000 || f > 100_000_000 || strings.TrimSpace(name) == "" {
+			warn("context_windows: entry %q must be a token count between 1000 and 100000000", name)
+			continue
+		}
+		out[name] = int64(f)
+	}
+	return out
 }

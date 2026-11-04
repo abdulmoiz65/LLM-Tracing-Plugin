@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+
+- **Time range** picker on the Traces page (15 minutes to 7 days, or all traces kept in memory; default all). The summary cards, sessions and request list follow it, and a line under the picker says which requests the numbers cover. In 0.2.0 the cards always showed the last hour while the list showed everything, which looked like a mismatch.
+- **Estimated cost** at API list prices: a cost card with the prompt-cache savings, an Est. cost column, per-request and per-attempt cost in the detail panel, and cost per session. Prices for about 1,700 models: a verified built-in Claude table plus a table generated from LiteLLM's price list (OpenAI/Codex, Gemini, Vertex, Antigravity, DeepSeek, xAI, Kimi, GLM, MiniMax, Mistral, Meta and more), with long-context tiers. The cost tooltip names the price source. Override or add prices with the new `pricing` config key; `tools/genprices` refreshes the generated table. Cache writes are priced at the 1-hour rate for Claude OAuth accounts and the 5-minute rate otherwise (`cache_write_ttl`).
+- **Sessions**: requests are grouped into estimated conversations (same client key and model, prompt keeps growing, no long pause). The sessions table shows context used against the model's context window (warning from 70%, red from 90%), growth per request, an estimate of how many requests still fit, and cost. Click a session to filter the request list.
+- **Context** column on requests (serving prompt against the context window). Built-in context windows for current Claude models; others via `context_windows`.
+- API: `range` on `/summary`, `/traces` and `/sessions`; `session` filter on `/traces`; new `GET /sessions` route; cost, context and session fields on items. Config keys `pricing`, `context_windows`, `cache_write_ttl` and `session_gap_minutes`.
+
+- **Saved history**: the Traces page history is written to `data_dir` (default `plugins/llm-tracing`, one file per day) and loaded again at start, so proxy restarts and plugin updates no longer reset cost and sessions. New keys `save_history` (default `true`), `data_dir`, `history_days` (default 7) and `history_max_requests` (default 20000). `/summary` reports `history` (folder, days, loaded, written and dropped records, last error) and `detail_traces`; items have `has_detail`.
+- **Canceled** requests (the client stopped them) are counted separately (`canceled` on `/summary` and `/sessions`, `status=canceled` filter) and no longer count as errors.
+
+### Changed
+
+- The history now covers every request of the last `history_days`, not just the newest `ui_max_traces`. Totals, cost, sessions and the 24-hour and 7-day ranges use the whole history; `ui_max_traces` (default 500) now bounds only the requests that keep full attempt details. `capacity` on `/summary` is the history limit.
+- `/summary` without `range` still covers the last hour, so existing API clients see the same numbers.
+
 ## 0.2.0
 
 ### Added

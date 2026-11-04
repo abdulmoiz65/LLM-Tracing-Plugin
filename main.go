@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +17,7 @@ import (
 const (
 	pluginID      = "llm-tracing"
 	pluginName    = "LLM Tracing"
-	pluginVersion = "0.2.0"
+	pluginVersion = "0.3.0"
 	pluginAuthor  = "abdulmoiz65"
 	pluginRepo    = "https://github.com/abdulmoiz65/LLM-Tracing-Plugin"
 
@@ -42,6 +43,9 @@ type pluginState struct {
 	loopCtx  context.Context
 	cancel   context.CancelFunc
 	modeLog  string
+	// history saves the Traces page history to disk. Only the real plugin
+	// (autoLoop) writes files; unit tests use historyFile directly.
+	history *historyFile
 }
 
 func newPluginState(now func() time.Time, logger func(level, message string), autoLoop bool) *pluginState {
@@ -74,9 +78,54 @@ func (p *pluginState) configure(cfg config, warnings []string) {
 		p.tracer.logger("info", mode)
 	}
 	p.modeLog = mode
+	if p.autoLoop {
+		p.syncHistoryLocked(cfg)
+	}
 	if cfg.recording() && p.autoLoop && !p.running {
 		p.startLocked()
 	}
+}
+
+// syncHistoryLocked starts, restarts or stops the history file for cfg. A
+// new history file is loaded in the background and merged into the store.
+func (p *pluginState) syncHistoryLocked(cfg config) {
+	want := cfg.uiActive() && cfg.SaveHistory
+	dir := cfg.DataDir
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	if p.history != nil && (!want || p.history.dir != dir || p.history.days != cfg.HistoryDays) {
+		p.tracer.store.setPersist(nil)
+		old := p.history
+		p.history = nil
+		go old.close()
+	}
+	if !want || p.history != nil {
+		return
+	}
+	h := newHistoryFile(dir, cfg.HistoryDays, p.tracer.now)
+	h.loading = true
+	p.history = h
+	p.tracer.store.setPersist(h.enqueue)
+	go func() {
+		traces, err := h.load()
+		n := p.tracer.store.importHistory(traces)
+		h.statMu.Lock()
+		h.loading, h.loaded, h.imported = false, len(traces), n
+		h.statMu.Unlock()
+		if err != nil {
+			h.setErr(fmt.Errorf("load history: %w", err))
+			p.tracer.logger("warn", "llm-tracing: could not load the saved history: "+err.Error())
+		} else if n > 0 {
+			p.tracer.logger("info", fmt.Sprintf("llm-tracing: loaded %d saved requests from %s (%d new)", len(traces), dir, n))
+		}
+	}()
+}
+
+func (p *pluginState) currentHistory() *historyFile {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.history
 }
 
 func (p *pluginState) startLocked() {
@@ -120,6 +169,9 @@ func (p *pluginState) run(ctx context.Context, stop <-chan struct{}, done chan<-
 			}
 		}
 		t.reportStats(now)
+		if h := p.currentHistory(); h != nil {
+			h.flush()
+		}
 	}
 }
 
@@ -129,6 +181,9 @@ func (p *pluginState) drain(timeout time.Duration) {
 	defer cancel()
 	p.tracer.flushPending()
 	p.tracer.flushAll(ctx)
+	if h := p.currentHistory(); h != nil {
+		h.flush()
+	}
 }
 
 func (p *pluginState) quiesce() { p.drain(shutdownTimeout) }
@@ -139,7 +194,13 @@ func (p *pluginState) shutdown() {
 	p.mu.Lock()
 	running, stop, done, cancel := p.running, p.stop, p.done, p.cancel
 	p.running = false
+	history := p.history
+	p.history = nil
 	p.mu.Unlock()
+	if history != nil {
+		p.tracer.store.setPersist(nil)
+		history.close()
+	}
 	if !running {
 		return
 	}
@@ -196,9 +257,17 @@ func configFields() []configField {
 		{"max_batch_spans", "integer", d.MaxBatchSpans, "Maximum spans per OTLP export request."},
 		{"export_timeout_ms", "integer", d.ExportTimeout.Milliseconds(), "HTTP timeout for one export attempt."},
 		{"ui_enabled", "boolean", d.UIEnabled, "Keep recent traces in memory for the built-in Traces page (Management Center > LLM Tracing). Shows every request regardless of sample_rate."},
-		{"ui_max_traces", "integer", d.UIMaxTraces, "How many recent traces the Traces page keeps (10..5000); the oldest is dropped first."},
+		{"ui_max_traces", "integer", d.UIMaxTraces, "How many of the newest requests keep full attempt details (waterfall, attributes) on the Traces page (10..5000). Older requests keep their totals."},
 		{"ui_show_account_labels", "boolean", d.UIShowAccountLabels, "Show a readable account label (e-mail, label or auth file name from the host's auth list) for each attempt on the Traces page. Off: only auth type and a short auth index. Never exported unless export_account_labels is on."},
 		{"export_account_labels", "boolean", d.ExportAccountLabels, "Also add the account label as cpa.account to exported attempt spans. Off by default because labels are often e-mail addresses."},
+		{"pricing", "object", nil, "Extra or overriding model prices for the cost estimate, USD per million tokens: {<model>: {input, output, cache_read, cache_write}}. cache_read defaults to 10% and cache_write to 125% of input. Claude models are built in."},
+		{"context_windows", "object", nil, "Extra or overriding context window sizes in tokens: {<model>: <tokens>}. Claude models are built in."},
+		{"cache_write_ttl", "string", d.CacheWriteTTL, "Price of cache writes: auto (1-hour rate for Claude OAuth accounts, 5-minute rate otherwise), 5m or 1h."},
+		{"save_history", "boolean", d.SaveHistory, "Save the Traces page history to data_dir so it survives proxy restarts and plugin updates (same sanitized data as the page; no prompts, responses or keys)."},
+		{"data_dir", "string", d.DataDir, "Folder for the saved history, relative to the proxy's working directory. One file per day: traces-YYYYMMDD.jsonl."},
+		{"history_days", "integer", d.HistoryDays, "Days of history kept in memory and on disk (1..90). Older files are deleted."},
+		{"history_max_requests", "integer", d.HistoryMaxRequests, "Most requests kept in the history (1000..200000). Totals, cost and sessions use all of them; attempt details are kept for the newest ui_max_traces."},
+		{"session_gap_minutes", "integer", int(d.SessionGap / time.Minute), "Idle minutes after which a client's next request starts a new session on the Traces page (1..1440)."},
 	}
 }
 

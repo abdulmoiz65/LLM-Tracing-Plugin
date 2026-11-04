@@ -38,8 +38,23 @@
   </section>
 
   <div id="app" hidden>
-    <section class="summary" aria-label="Last hour">
-      <div class="metric"><span class="label">Requests</span><strong id="m-requests">-</strong><span class="hint">last hour</span></div>
+    <div class="rangebar">
+      <label class="field">Time range
+        <select id="f-range">
+          <option value="15m">Last 15 minutes</option>
+          <option value="1h">Last hour</option>
+          <option value="6h">Last 6 hours</option>
+          <option value="24h">Last 24 hours</option>
+          <option value="7d">Last 7 days</option>
+          <option value="all" selected>All history</option>
+        </select>
+      </label>
+      <p id="range-line" class="muted small" aria-live="polite"></p>
+    </div>
+
+    <section class="summary" aria-label="Summary for the selected time range">
+      <div class="metric"><span class="label">Requests</span><strong id="m-requests">-</strong><span id="m-requests-hint" class="hint"></span></div>
+      <div class="metric"><span class="label">Est. cost</span><strong id="m-cost">-</strong><span id="m-cost-hint" class="hint">at API list prices</span></div>
       <div class="metric"><span class="label">Error rate</span><strong id="m-errors">-</strong><span id="m-errors-hint" class="hint"></span></div>
       <div class="metric"><span class="label">Avg / p95 latency</span><strong id="m-latency">-</strong><span class="hint">end to end</span></div>
       <div class="metric"><span class="label">Tokens in / out</span><strong id="m-tokens">-</strong><span class="hint">input incl. cache, all attempts</span></div>
@@ -47,7 +62,36 @@
       <div class="metric"><span class="label">Retried requests</span><strong id="m-retried">-</strong><span class="hint">more than one attempt</span></div>
     </section>
 
-    <section class="card">
+    <section class="card" aria-labelledby="sessions-title">
+      <div class="section-head">
+        <h2 id="sessions-title">Sessions</h2>
+        <span class="muted small">Estimated: requests from the same client key and model whose prompt keeps growing. Click one to see its requests.</span>
+      </div>
+      <div id="sessions-empty" class="empty small" hidden><p>No sessions in this time range.</p></div>
+      <div id="sessions-wrap" class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Last activity</th>
+              <th scope="col">Model</th>
+              <th scope="col">Account</th>
+              <th scope="col" class="num">Requests</th>
+              <th scope="col" title="Prompt size of the latest request against the model's context window">Context used</th>
+              <th scope="col" class="num opt-2" title="Average prompt growth per request">Growth</th>
+              <th scope="col" class="num" title="Estimated at API list prices">Est. cost</th>
+              <th scope="col" class="opt-1">Client key</th>
+            </tr>
+          </thead>
+          <tbody id="session-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="requests-title">
+      <div class="section-head">
+        <h2 id="requests-title">Requests</h2>
+        <span id="session-chip" class="chip" hidden><span id="session-chip-text"></span><button id="session-clear" type="button" class="ghost compact" aria-label="Show all sessions">Show all</button></span>
+      </div>
       <div class="toolbar">
         <div class="filters">
           <label class="field">Status
@@ -55,6 +99,7 @@
               <option value="all">All</option>
               <option value="ok">OK</option>
               <option value="error">Errors</option>
+              <option value="canceled">Canceled</option>
             </select>
           </label>
           <label class="field grow">Model
@@ -73,7 +118,8 @@
       <p id="status-line" class="muted small" aria-live="polite"></p>
       <div id="empty" class="empty" hidden>
         <h3>No traces yet</h3>
-        <p>Traces appear here a few seconds after requests go through the proxy. Only the most recent requests are kept, in memory.</p>
+        <p>Traces appear here a few seconds after requests go through the proxy.</p>
+        <p class="small">Try a longer time range if you expected requests here.</p>
       </div>
       <div id="table-wrap" class="table-wrap">
         <table>
@@ -88,6 +134,8 @@
               <th scope="col" class="num">Attempts</th>
               <th scope="col" class="num" title="Total input (uncached + cache read + cache write) / output, all attempts">Tokens in / out</th>
               <th scope="col" class="opt-2">Cache</th>
+              <th scope="col" class="opt-2" title="Prompt size against the model's context window">Context</th>
+              <th scope="col" class="num" title="Estimated at API list prices">Est. cost</th>
               <th scope="col" class="opt-1">Client key</th>
             </tr>
           </thead>

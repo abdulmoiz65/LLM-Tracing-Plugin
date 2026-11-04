@@ -21,7 +21,7 @@ func finalize(tr *tracer, clock *fakeClock) {
 
 func TestTraceStoreRingBoundsAndOrder(t *testing.T) {
 	s := newTraceStore()
-	s.configure(true, 10)
+	s.configure(true, 10, 10, 0)
 	var ids []traceID
 	for i := 0; i < 15; i++ {
 		tid := newTraceID()
@@ -41,7 +41,7 @@ func TestTraceStoreRingBoundsAndOrder(t *testing.T) {
 	if _, ok := s.get(ids[5], nil); !ok {
 		t.Fatal("retained trace not reachable")
 	}
-	s.configure(true, 3) // shrink keeps the newest
+	s.configure(true, 3, 3, 0) // shrink keeps the newest
 	list = s.list(traceFilter{limit: 500, status: "all"}, nil)
 	if len(list) != 3 || list[0].TraceID != ids[14].String() || list[2].TraceID != ids[12].String() {
 		t.Fatalf("shrink kept wrong traces: %+v", list)
@@ -50,7 +50,7 @@ func TestTraceStoreRingBoundsAndOrder(t *testing.T) {
 	if s.len() != 3 {
 		t.Fatalf("bound not enforced after shrink: %d", s.len())
 	}
-	s.configure(false, 3)
+	s.configure(false, 3, 3, 0)
 	if s.len() != 0 || s.capacity() != 0 || len(s.byID) != 0 {
 		t.Fatal("disabled store must release everything")
 	}
@@ -157,7 +157,7 @@ func TestUIWorksWithoutEndpoint(t *testing.T) {
 		t.Fatalf("exporter must stay off: n=%d err=%v", n, err)
 	}
 	s := p.tracer.summary()
-	if s.StoredTraces != 1 || s.Requests != 1 || s.RetriedRequests != 1 || s.Exporter.Enabled || s.Exporter.EndpointHost != "" || s.Version != "0.2.0" {
+	if s.StoredTraces != 1 || s.Requests != 1 || s.RetriedRequests != 1 || s.Exporter.Enabled || s.Exporter.EndpointHost != "" || s.Version != "0.3.0" {
 		t.Fatalf("summary wrong: %+v", s)
 	}
 }
@@ -262,7 +262,7 @@ func TestSummaryMath(t *testing.T) {
 	}
 	finalize(tr, clock)
 	s := tr.summary()
-	if s.StoredTraces != 21 || s.Capacity != 500 || s.WindowSeconds != 3600 {
+	if s.StoredTraces != 21 || s.Capacity != 20000 || s.DetailTraces != 500 || s.WindowSeconds != 3600 {
 		t.Fatalf("store stats: %+v", s)
 	}
 	if s.Requests != 20 || s.Errors != 5 || s.ErrorRate != 0.25 || s.RetriedRequests != 5 {
@@ -331,5 +331,25 @@ func TestParseUIConfig(t *testing.T) {
 	}
 	if !names["ui_enabled"] || !names["ui_max_traces"] {
 		t.Fatal("ui config fields missing from registration")
+	}
+}
+
+func TestCanceledIsNotAnError(t *testing.T) {
+	clock := newFakeClock()
+	tr := newTestTracer(t, uiConfig(), clock)
+	start := clock.Now()
+	tr.addCompletion(completionAt("ok", start, start.Add(time.Second), outcomeSucceeded, 200))
+	tr.addCompletion(completionAt("esc", start.Add(time.Second), start.Add(2*time.Second), outcomeCanceled, 499))
+	tr.addCompletion(completionAt("bad", start.Add(2*time.Second), start.Add(3*time.Second), "failed", 502))
+	finalize(tr, clock)
+	s := tr.summaryFor(0, "all")
+	if s.Requests != 3 || s.Errors != 1 || s.Canceled != 1 || s.ErrorRate != 0.3333 {
+		t.Fatalf("errors=%d canceled=%d rate=%v", s.Errors, s.Canceled, s.ErrorRate)
+	}
+	if got := tr.store.list(traceFilter{limit: 10, status: "canceled"}, nil); len(got) != 1 || got[0].Outcome != outcomeCanceled {
+		t.Fatalf("canceled filter: %+v", got)
+	}
+	if got := tr.store.list(traceFilter{limit: 10, status: "error"}, nil); len(got) != 1 || got[0].StatusCode != 502 {
+		t.Fatalf("error filter: %+v", got)
 	}
 }

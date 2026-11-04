@@ -126,7 +126,9 @@ func newTracer(cfg config, now func() time.Time) *tracer {
 	}
 	t.queue.limit = cfg.MaxQueueSpans
 	t.lastStat = now()
-	t.store.configure(cfg.uiActive(), cfg.UIMaxTraces)
+	t.store.now = now
+	t.store.configure(cfg.uiActive(), cfg.UIMaxTraces, cfg.HistoryMaxRequests, cfg.historyAge())
+	t.store.setModels(cfg.pricer(), cfg.SessionGap)
 	t.exp.configure(cfg)
 	return t
 }
@@ -158,7 +160,8 @@ func (t *tracer) reconfigure(cfg config) {
 	} else {
 		t.stats.queueDropped += uint64(t.queue.setLimit(cfg.MaxQueueSpans))
 	}
-	t.store.configure(cfg.uiActive(), cfg.UIMaxTraces)
+	t.store.configure(cfg.uiActive(), cfg.UIMaxTraces, cfg.HistoryMaxRequests, cfg.historyAge())
+	t.store.setModels(cfg.pricer(), cfg.SessionGap)
 	t.mu.Unlock()
 	t.exp.configure(cfg)
 }

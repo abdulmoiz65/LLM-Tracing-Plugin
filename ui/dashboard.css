@@ -56,7 +56,7 @@ body {
   font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   overflow-x: hidden;
 }
-main { max-width: 1280px; margin: 0 auto; padding: 20px 16px 48px; }
+main { max-width: 1640px; margin: 0 auto; padding: 20px 16px 48px; }
 h1 { font-size: 20px; margin: 0; letter-spacing: -0.2px; }
 h2 { font-size: 16px; margin: 0 0 6px; }
 h3 { font-size: 13px; margin: 18px 0 8px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); }
@@ -100,7 +100,23 @@ button.compact { padding: 3px 10px; font-size: 12px; }
 .check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; margin-top: 10px; cursor: pointer; }
 .alert { background: var(--bad-bg); color: var(--bad); border-radius: 8px; padding: 8px 12px; margin: 12px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.summary { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.rangebar { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+.rangebar p { margin: 0 0 8px; }
+.section-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.section-head h2 { margin: 0; }
+.chip { display: inline-flex; align-items: center; gap: 8px; padding: 2px 4px 2px 10px; border-radius: 999px; background: var(--track); font-size: 12px; }
+.metric .hint.ok { color: var(--ok); }
+/* Context gauge: fill width is set through the CSSOM (CSP-safe). */
+.ctx { display: flex; align-items: center; gap: 8px; min-width: 150px; white-space: nowrap; font-size: 12px; }
+.ctx-track { position: relative; flex: 1; min-width: 60px; height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
+.ctx-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--bar); }
+.ctx.warn .ctx-fill { background: var(--warn); }
+.ctx.bad .ctx-fill { background: var(--bad); }
+.ctx.warn .ctx-text { color: var(--warn); font-weight: 600; }
+.ctx.bad .ctx-text { color: var(--bad); font-weight: 600; }
+td.ctx-cell { min-width: 120px; }
+.session-tag { display: block; font-size: 11px; color: var(--muted); }
 .metric { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; min-width: 0; }
 .metric .label { display: block; font-size: 12px; color: var(--muted); }
 .metric strong { display: block; font-size: 20px; margin: 2px 0; overflow-wrap: anywhere; }
@@ -170,8 +186,13 @@ summary { cursor: pointer; color: var(--muted); }
 .attr-table td { padding: 3px 6px; font-size: 12px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
 .attr-table td:first-child { color: var(--muted); white-space: nowrap; }
 
+/* The request table has 13 columns: drop the client key (also in the
+   detail panel) before it would need to scroll. */
+@media (max-width: 1560px) {
+  #table-wrap th.opt-1, #table-wrap td.opt-1 { display: none; }
+}
 @media (max-width: 1180px) {
-  .summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .summary { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   th.opt-1, td.opt-1 { display: none; }
 }
 @media (max-width: 900px) {

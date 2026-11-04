@@ -28,7 +28,7 @@ const (
 	maxMinDurationMS   = 24 * 60 * 60 * 1000
 	contentTypeJSON    = "application/json; charset=utf-8"
 	dashboardMenu      = "LLM Tracing"
-	dashboardMenuHint  = "Recent requests, attempts, latency and tokens"
+	dashboardMenuHint  = "Recent requests, sessions, cost, latency and tokens"
 	resourceDashboard  = "dashboard"
 	resourceStylesheet = "dashboard.css"
 	resourceScript     = "dashboard.js"
@@ -89,6 +89,7 @@ func managementRegistrationResponse() managementRegistration {
 			{Method: http.MethodGet, Path: apiBase + "/summary"},
 			{Method: http.MethodGet, Path: apiBase + "/traces"},
 			{Method: http.MethodGet, Path: apiBase + "/trace"},
+			{Method: http.MethodGet, Path: apiBase + "/sessions"},
 		},
 		Resources: []resourceRoute{
 			{Path: "/" + resourceDashboard, Menu: dashboardMenu, Description: dashboardMenuHint},
@@ -168,14 +169,48 @@ func (p *pluginState) handleManagement(req managementRequest) managementResponse
 	query := url.Values(req.Query)
 	switch endpoint {
 	case "summary":
+		window, label, errMsg := parseRange(query, "1h")
+		if errMsg != "" {
+			return errorResponse(http.StatusBadRequest, errMsg)
+		}
 		t.refreshAccounts(cfg)
-		return jsonResponse(http.StatusOK, t.summary())
+		summary := t.summaryFor(window, label)
+		summary.History = p.currentHistory().status()
+		summary.History.Days = cfg.HistoryDays
+		return jsonResponse(http.StatusOK, summary)
 	case "traces":
 		filter, errMsg := parseTraceFilter(query)
 		if errMsg != "" {
 			return errorResponse(http.StatusBadRequest, errMsg)
 		}
+		if window, _, errRange := parseRange(query, "all"); errRange != "" {
+			return errorResponse(http.StatusBadRequest, errRange)
+		} else if window > 0 {
+			filter.since = t.now().Add(-window).UnixNano()
+		}
 		return jsonResponse(http.StatusOK, map[string]any{"traces": t.store.list(filter, t.refreshAccounts(cfg))})
+	case "sessions":
+		window, _, errMsg := parseRange(query, "all")
+		if errMsg != "" {
+			return errorResponse(http.StatusBadRequest, errMsg)
+		}
+		limit := defaultListLimit
+		if raw := strings.TrimSpace(query.Get("limit")); raw != "" {
+			n, err := strconv.Atoi(raw)
+			if err != nil {
+				return errorResponse(http.StatusBadRequest, "invalid limit: expected an integer")
+			}
+			limit = n
+		}
+		now := t.now()
+		var since int64
+		if window > 0 {
+			since = now.Add(-window).UnixNano()
+		}
+		return jsonResponse(http.StatusOK, map[string]any{
+			"sessions":            t.store.sessions(since, limit, now, t.refreshAccounts(cfg)),
+			"session_gap_seconds": int(cfg.SessionGap / time.Second),
+		})
 	case "trace":
 		tid, okID := parseTraceIDParam(query.Get("id"))
 		if !okID {
@@ -204,10 +239,10 @@ func parseTraceFilter(q url.Values) (traceFilter, string) {
 	}
 	switch status := strings.ToLower(strings.TrimSpace(q.Get("status"))); status {
 	case "", "all":
-	case "ok", "error":
+	case "ok", "error", "canceled":
 		f.status = status
 	default:
-		return f, "invalid status: expected all, ok or error"
+		return f, "invalid status: expected all, ok, error or canceled"
 	}
 	model := strings.ToLower(strings.TrimSpace(q.Get("model")))
 	f.model = truncateUTF8(model, maxModelFilterLen)
@@ -220,7 +255,35 @@ func parseTraceFilter(q url.Values) (traceFilter, string) {
 		}
 		f.minMS = math.Min(math.Max(v, 0), maxMinDurationMS)
 	}
+	if raw := strings.ToLower(strings.TrimSpace(q.Get("session"))); raw != "" {
+		if !validSessionID(raw) {
+			return f, "invalid session: expected 32 hex characters"
+		}
+		f.session = raw
+	}
 	return f, ""
+}
+
+// timeRanges are the accepted `range` values; 0 means every stored trace.
+var timeRanges = map[string]time.Duration{
+	"15m": 15 * time.Minute,
+	"1h":  time.Hour,
+	"6h":  6 * time.Hour,
+	"24h": 24 * time.Hour,
+	"7d":  7 * 24 * time.Hour,
+	"all": 0,
+}
+
+func parseRange(q url.Values, fallback string) (time.Duration, string, string) {
+	label := strings.ToLower(strings.TrimSpace(q.Get("range")))
+	if label == "" {
+		label = fallback
+	}
+	window, ok := timeRanges[label]
+	if !ok {
+		return 0, "", "invalid range: expected 15m, 1h, 6h, 24h, 7d or all"
+	}
+	return window, label, ""
 }
 
 func parseTraceIDParam(raw string) (traceID, bool) {
@@ -245,11 +308,15 @@ type exporterStatus struct {
 }
 
 type summaryJSON struct {
-	Version       string `json:"version"`
+	Version string `json:"version"`
+	// Range is the requested window ("all": every stored trace, and then
+	// WindowSeconds is 0).
+	Range         string `json:"range"`
 	WindowSeconds int    `json:"window_seconds"`
 	summaryStats
 	Exporter      exporterStatus `json:"exporter"`
 	AccountLabels accountStatus  `json:"account_labels"`
+	History       historyStatus  `json:"history"`
 }
 
 // refreshAccounts reloads credential labels from host.auth.list when the
@@ -264,8 +331,12 @@ func (t *tracer) refreshAccounts(cfg config) map[string]string {
 	return t.accounts.snapshot()
 }
 
-// summary combines window statistics from the store with exporter state.
-func (t *tracer) summary() summaryJSON {
+// summary is the default one-hour summary.
+func (t *tracer) summary() summaryJSON { return t.summaryFor(summaryWindow, "1h") }
+
+// summaryFor combines window statistics from the store with exporter state.
+// A window <= 0 covers every stored trace.
+func (t *tracer) summaryFor(window time.Duration, label string) summaryJSON {
 	t.mu.Lock()
 	now := t.now()
 	labelsOn := t.cfg.UIShowAccountLabels || t.cfg.ExportAccountLabels
@@ -284,8 +355,9 @@ func (t *tracer) summary() summaryJSON {
 	t.mu.Unlock()
 	return summaryJSON{
 		Version:       pluginVersion,
-		WindowSeconds: int(summaryWindow / time.Second),
-		summaryStats:  t.store.summary(now),
+		Range:         label,
+		WindowSeconds: int(max(window, 0) / time.Second),
+		summaryStats:  t.store.summaryFor(now, window),
 		Exporter:      exp,
 		AccountLabels: t.accounts.status(labelsOn),
 	}

@@ -56,10 +56,18 @@ No key is required. With an empty `endpoint` the OTLP exporter is off and the pl
 | `flush_interval_ms` | `1000` | Export interval. |
 | `max_batch_spans` | `512` | Spans per export request. |
 | `export_timeout_ms` | `10000` | HTTP timeout per export attempt. |
-| `ui_enabled` | `true` | Keep recent traces in memory for the built-in Traces page. |
-| `ui_max_traces` | `500` | Traces kept for the page (10..5000). The oldest is dropped first. |
+| `ui_enabled` | `true` | Keep the request history for the built-in Traces page. |
+| `ui_max_traces` | `500` | Newest requests that keep full attempt details (waterfall, attributes), 10..5000. Older requests keep their totals. |
+| `history_days` | `7` | Days of history (1..90). Totals, cost, sessions and the time ranges use the whole history. |
+| `history_max_requests` | `20000` | Most requests in the history (1000..200000); the oldest are dropped first. |
+| `save_history` | `true` | Save the history to `data_dir` so it survives proxy restarts and plugin updates. See [Saved history](#saved-history). |
+| `data_dir` | `plugins/llm-tracing` | Folder for the saved history, relative to the proxy's working directory. |
 | `ui_show_account_labels` | `true` | Show a readable account label (e-mail, label or auth file name) for each credential on the Traces page. Off: the page shows only `<auth type> · <short auth index>`. See [Account labels](#account-labels). |
 | `export_account_labels` | `false` | Also export the account label as `cpa.account` on attempt spans. Labels are often e-mail addresses, so this is off by default. |
+| `pricing` | Claude built in | Extra or overriding prices for the cost estimate, USD per million tokens. See [Cost estimates](#cost-estimates). |
+| `context_windows` | Claude built in | Extra or overriding context window sizes, `{<model>: <tokens>}` (1000..100000000). |
+| `cache_write_ttl` | `auto` | Cache write price: `auto` (1-hour rate for Claude OAuth accounts, 5-minute rate otherwise), `5m` or `1h`. |
+| `session_gap_minutes` | `30` | Idle minutes after which a client's next request starts a new session (1..1440). |
 
 Numeric values can be YAML numbers or numeric strings. Out-of-range values are clamped and a warning is logged.
 
@@ -122,9 +130,10 @@ If you use an agentless OTLP intake for your site, pass the key with `headers: [
 Open the CPA Management Center and pick **LLM Tracing** from the plugin pages. The Management Center loads the page in a same-origin iframe from `/v0/resource/plugins/llm-tracing/dashboard`. You can also open that URL directly.
 
 1. Enter the CPA management key and click **Connect**. The page cannot read the Management Center's login, so it asks for the key itself. The key stays in the page's memory. Tick **Remember for this tab** to keep it in `sessionStorage` until the tab closes. It is never put in a URL, a cookie or `localStorage`.
-2. The cards show the last hour: requests, error rate, average and p95 latency, tokens in/out (input includes cache reads and writes), cache hit rate and retried requests.
-3. Filter by status (All / OK / Errors), by model (substring of the requested model), by provider (the serving attempt's provider), or to slow requests only (over 10 s). Auto-refresh reloads every 5 s and pauses while the tab is hidden.
-4. Click a row to see the attempt waterfall (failed attempts in red, first-token markers) and, for every attempt, its provider and account, model, response model, status code, token breakdown (total input, uncached, cache read, cache write, output, reasoning), cache hit rate, TTFT, auth type and index, and error text. A 429 on one account followed by a success on another shows as two attempts with different accounts.
+2. Pick a **Time range** (last 15 minutes, hour, 6 hours, 24 hours, 7 days, or the whole history; default the whole history, remembered for the tab). The cards, the sessions and the request list all cover that range, and the line next to the picker says how many requests it holds and from when to when. The cards show requests, estimated cost (and what the prompt cache saved), error rate, average and p95 latency, tokens in/out (input includes cache reads and writes), cache hit rate and retried requests.
+3. **Sessions** groups requests into conversations (see [Sessions](#sessions)). Each row shows the model, account, request count, a **context used** gauge (latest prompt against the model's context window; amber from 70%, red from 90%), the average prompt growth per request, and the estimated cost. Click a session to list only its requests; **Show all** clears the filter.
+4. Filter by status (All / OK / Errors / Canceled; a canceled request is one the client stopped, for example with Esc in a coding agent, and does not count as an error), by model (substring of the requested model), by provider (the serving attempt's provider), or to slow requests only (over 10 s). Auto-refresh reloads every 5 s and pauses while the tab is hidden.
+5. Click a row to see the attempt waterfall (failed attempts in red, first-token markers) and, for every attempt, its provider and account, model, response model, status code, token breakdown (total input, uncached, cache read, cache write, output, reasoning), cache hit rate, TTFT, auth type and index, and error text. A 429 on one account followed by a success on another shows as two attempts with different accounts.
 
 Table columns:
 
@@ -135,9 +144,11 @@ Table columns:
 | Account | account label of the serving attempt's credential (see [Account labels](#account-labels)) |
 | Tokens in / out | total input (uncached + cache read + cache write) / output, summed over attempts. The tooltip shows the breakdown, e.g. `145 uncached + 12,288 cache read + 1,024 cache write = 13,457 input tokens` |
 | Cache | `12.3k read · 1.1k write`, or `-` without cache use; the tooltip shows the hit rate |
+| Context | prompt size of the serving attempt against the model's context window, as a gauge |
+| Est. cost | estimated cost at API list prices; `+` means some tokens had no price. The tooltip shows the cache savings |
 | Client key | `sha256:` fingerprint of the client key |
 
-On narrower windows the Client key column is hidden first (below 1180 px), then Provider and Cache (below 900 px). The table scrolls horizontally inside its card when it still does not fit; the page itself never scrolls sideways.
+The Time cell also says `session request 5 of 12` when the request belongs to a longer session. On narrower windows the Client key column is hidden first (below 1180 px), then Provider, Cache and Context (below 900 px). The table scrolls horizontally inside its card when it still does not fit; the page itself never scrolls sideways.
 
 Layout: the Management Center draws its own toolbar (refresh, language, theme, logout) over the top-right corner of the plugin page. The page keeps that corner free: the title, the exporter status and the **Disconnect** button sit on the left of the header, the header reserves 256 px on the right and is tall enough that the first card starts below the toolbar, and below 720 px width the whole header moves under the toolbar. Filters and buttons flow from the left, and the trace detail scrolls into view with a top margin so its buttons are not hidden.
 
@@ -148,6 +159,30 @@ What the page shows:
 - **Trace and span IDs match the OTLP export**, so a trace ID copied from the page finds the same trace in Jaeger or Langfuse (when it was sampled in).
 - Usage records that arrive after a trace was finalized update the stored trace (attempt count, tokens, waterfall).
 - Requests without a `request.complete` event (synthesized roots, usage records without TraceID) have outcome `unknown`.
+
+### Cost estimates
+
+Costs are **estimates at the providers' API list prices**, per attempt: uncached input, cache reads, cache writes and output each at their own rate (Gemini thinking tokens count as output). "Without cache" prices every input token at the input rate, and the difference is the cache savings.
+
+- Prices come from three layers. Your `pricing` config wins. Then the built-in Claude table (Anthropic first-party list prices as of 2026-10-06, including Claude Haiku 5.5's higher rate above 100K prompt tokens). Then a table generated from [LiteLLM's price list](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json) (about 1,700 chat models; MIT, see `THIRD_PARTY_NOTICES.md`), which covers OpenAI and Codex (GPT), Gemini (AI Studio, Vertex, Gemini CLI), Antigravity's Claude and Gemini models, DeepSeek, xAI Grok, Moonshot Kimi, Z.ai GLM, MiniMax, Mistral, Meta and more, with context windows and long-context tiers (for example Gemini 2.5 Pro above 200K tokens, GPT above 272K).
+- From LiteLLM, the provider's own price is used when there is one, then Vertex AI, then Bedrock and Azure, and only then a reseller's price (which may include a markup). The cost tooltip names the source, e.g. `litellm: openai`. A missing cache price means the cached tokens are priced as plain input.
+- A request whose model has no price shows `+` after its cost, and the summary names the unpriced models. Image and video models (Imagen, Grok Imagine) are billed per image or second and are never priced.
+- Model names match exactly or by the longest prefix followed by `-`, `@` or `:` (`claude-opus-5-5-20260401`, `claude-opus-5-5(high)`, Antigravity's `claude-opus-5-5-high` and `us.anthropic.claude-opus-5-5` all use the `claude-opus-5-5` price). A dot never counts as a separator, so `kimi-k2` does not price `kimi-k2.8`, and names without a digit match exactly only.
+- Usage records do not say whether a cache write used the 5-minute (1.25x input) or 1-hour (2x input) cache. With `cache_write_ttl: auto`, Claude OAuth (subscription) accounts use the 1-hour rate, because CPA sends their prompts with the 1-hour cache like Claude Code does, and everything else uses the 5-minute rate.
+- **Subscription accounts are not billed per token.** For Claude, Codex or Gemini OAuth accounts the cost is what the same tokens would cost through the API, which is useful for comparing usage but is not a bill.
+
+```yaml
+pricing:
+  gpt-5.5: {input: 1.25, output: 10, cache_read: 0.125}
+context_windows:
+  gpt-5.5: 400000
+```
+
+### Sessions
+
+CPA does not tell plugins which conversation a request belongs to, so sessions are estimated. A coding agent resends the whole conversation on every turn, so within one conversation the prompt only grows. A request joins the open session with the same client key and requested model whose latest prompt is the largest one that is not more than about 10% bigger than its own. A request with a much smaller prompt (a new conversation, or one that was just compacted) or one that comes after `session_gap_minutes` of silence starts a new session. Failed requests without token usage join the most recent open session. The session ID is the trace ID of its first request; sessions are rebuilt from the history, so the oldest session can lose its first requests when they fall out of the history window.
+
+The **context used** gauge compares the latest request's prompt (what the model had to read) with the model's context window. When a session keeps growing, the tooltip estimates how many more requests fit.
 
 ### Token semantics
 
@@ -184,7 +219,16 @@ Labels are computed when the page asks and are not stored with the traces. With 
 
 Labels are not exported by default. With `export_account_labels: true` each exported attempt span gets `cpa.account`, read from the cached list (the background loop refreshes it every 60 s while exporting); attempts recorded before the first refresh get the fallback form. The root span never carries it.
 
-Memory: traces live in a ring of `ui_max_traces` entries (newest kept). Each stored trace keeps at most 16 attempt spans; counters still include the rest. A typical trace takes a few KB, so the default 500 traces use a few MB. Data is lost on restart.
+Memory: the history keeps every request of the last `history_days` (at most `history_max_requests`). Every request keeps its totals (tokens, cost, session, provider, account index), a few hundred bytes each; only the newest `ui_max_traces` also keep their attempt spans (at most 16 each, a few KB). The defaults use roughly 10 to 20 MB when the history is full.
+
+### Saved history
+
+With `save_history: true` (default) the history is written to `data_dir` (default `plugins/llm-tracing`, relative to the proxy's working directory) and loaded again in the background when the plugin starts, so a proxy restart or a plugin update does not reset the page. One JSON Lines file per UTC day, `traces-YYYYMMDD.jsonl`; files older than `history_days` are deleted. A request updated by a late usage record is written again, and the last line wins.
+
+- The files hold exactly what the page stores: masked client keys, redacted and truncated error text, models, providers, token counts, timings and auth indexes. Never prompts, responses, raw keys or account labels (labels are looked up when the page is viewed). Files are created with mode `0600` in a `0700` folder.
+- Writes never happen on the request path: requests are queued (at most 20,000) and written by the plugin's background loop about once a second, and on shutdown.
+- Damaged or hand-edited lines are skipped (`history.skipped_lines` in `/summary`). Write errors appear in `history.last_error` and in the page's status line.
+- `save_history: false` keeps the history in memory only.
 
 Wrong keys: CPA bans an IP for 30 minutes after 5 failed management-key attempts. The page stops auto-refresh after a 401 or 403 and asks for the key again instead of retrying.
 
@@ -192,15 +236,18 @@ The page and its API are unavailable when CPA runs in Home mode (`home.enabled`)
 
 ### API reference
 
-The page uses three plugin Management API routes. The host authenticates them with the management key (`Authorization: Bearer <key>` or `X-Management-Key`) before the plugin sees the request; a missing or wrong key gets 401 from CPA. CPA only allows plugin management routes under `/v0/management/`; they are not mirrored under `/v8/management/`. All responses are JSON with `Content-Type: application/json; charset=utf-8` and `Cache-Control: no-store`. Only GET is supported.
+The page uses four plugin Management API routes. The host authenticates them with the management key (`Authorization: Bearer <key>` or `X-Management-Key`) before the plugin sees the request; a missing or wrong key gets 401 from CPA. CPA only allows plugin management routes under `/v0/management/`; they are not mirrored under `/v8/management/`. All responses are JSON with `Content-Type: application/json; charset=utf-8` and `Cache-Control: no-store`. Only GET is supported.
 
 `P = /v0/management/plugins/llm-tracing`
 
 | Route | Response |
 |---|---|
 | `GET P/summary` | `{"version","window_seconds":3600,"requests","errors","error_rate","avg_latency_ms","p95_latency_ms","input_tokens","total_input_tokens","cache_read_tokens","cache_creation_tokens","cache_hit_rate","output_tokens","retried_requests","stored_traces","capacity","providers":[...],"exporter":{"enabled","endpoint_host","exported_spans","dropped_spans","last_error","last_export_at"},"account_labels":{"enabled","known_credentials","last_refresh_at","last_error"}}` |
-| `GET P/traces?limit=50&status=all\|ok\|error&model=<substring>&provider=<name>&min_ms=<n>` | `{"traces":[item...]}`, newest start time first |
+| `GET P/traces?limit=50&status=all\|ok\|error&model=<substring>&provider=<name>&min_ms=<n>&range=<r>&session=<id>` | `{"traces":[item...]}`, newest start time first |
 | `GET P/trace?id=<32 hex>` | `{"trace": item + "spans":[span...]}` |
+| `GET P/sessions?range=<r>&limit=50` | `{"sessions":[session...],"session_gap_seconds"}`, most recently active first |
+
+`range` is `15m`, `1h`, `6h`, `24h`, `7d` or `all`. `/summary` defaults to `1h` (as in 0.2.0) and returns `range`, `window_seconds` (0 for `all`), `cost_usd`, `cost_without_cache_usd`, `cache_savings_usd`, `unpriced_requests`, `unpriced_models`, `prices_as_of`, `oldest_trace_at` and `newest_trace_at` in addition to the fields above. `/traces` and `/sessions` default to `all`. Items also have `cost_usd`, `cost_without_cache_usd`, `priced`, `serving_model`, `context_tokens`, `context_window`, `context_used` (0..1), `session_id`, `session_seq` and `session_requests`; attempt spans have `cost_usd` when priced. A session has `id`, `client_key`, `model`, `serving_model`, `provider`, `account`, `requests`, `errors`, `started_at`, `last_at`, `active`, `first_context_tokens`, `context_tokens`, `peak_context_tokens`, `context_window`, `context_used`, `growth_per_request`, `requests_until_full` (-1 when unknown), token sums, `cache_hit_rate`, `cost_usd`, `cost_without_cache_usd` and `priced`. An unknown `range` or a malformed `session` gets 400.
 
 - **Summary** covers stored traces that started in the last hour (so at most `ui_max_traces`). `error_rate` is `errors / requests` (0 with no requests). `p95_latency_ms` uses the nearest-rank method. `retried_requests` counts traces with more than one attempt, whatever the outcome. Token fields sum the traces in the window (see [Token semantics](#token-semantics)); `cache_hit_rate` is computed from those sums. `providers` lists the serving providers of all stored traces (sorted, at most 50) for the provider filter. `account_labels` describes the label cache. `exporter.enabled` is false when no endpoint is set; `endpoint_host` is `host:port` only; `dropped_spans` sums queue-full, failed-export and backend-rejected spans; `last_error` is the redacted error of the last failed export and is cleared by the next successful one; `last_export_at` is the RFC 3339 time of the last successful export.
 - **Item:** `trace_id` (OTel trace ID), `cpa_trace_id`, `started_at` (RFC 3339 nano, UTC), `duration_ms`, `requested_model`, `source_format`, `stream`, `outcome` (`succeeded`, `failed`, `rejected`, `canceled`, `unknown`), `status_code`, `attempt_count`, `failed_attempts`, `input_tokens` (provider-reported), `total_input_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `cache_hit_rate`, `output_tokens`, `reasoning_tokens`, `cached_tokens` (compatibility; per attempt the larger of cached and cache-read tokens), `provider` and `account` (of the serving attempt), `client_key` (`sha256:...`), `error` (the request error, or for a failed request without one the last failed attempt's error; empty for succeeded requests).
@@ -298,7 +345,7 @@ Successful spans keep status UNSET, as the OpenTelemetry spec recommends for ins
 ## Limitations
 
 - Attributes on an exported root (`cpa.attempt_count`, token roll-ups) do not include usage records that arrive after the trace was exported. Those late records still attach to the root as child spans. The Traces page counters do include them.
-- The Traces page keeps data in memory only, per CPA process, and loses it on restart.
+- The Traces page history is per CPA process. With `save_history: true` it is also written to `data_dir` and survives restarts; point several CPA processes at different folders.
 - Requests that CPA rejects before execution produce a root span with no children. Credentials skipped because of cool-down produce no attempt span, because CPA emits no usage record for them.
 - When more than one completion with the same TraceID has a window containing a usage record's start time, the most recent of those completions gets the record. Turns on one WebSocket connection do not overlap in practice.
 - Only OTLP/HTTP JSON is supported, without gzip compression. OTLP/gRPC and protobuf are not.
@@ -314,6 +361,21 @@ CGO_ENABLED=1 go build -buildmode=c-shared -trimpath -ldflags "-s -w" -o dist/wi
 ```
 
 Tags `v*` trigger `.github/workflows/release.yml`. It builds windows/linux/darwin for amd64 and arm64 and publishes `llm-tracing_<version>_<goos>_<goarch>.zip` (library at the zip root) plus `checksums.txt`.
+
+### Updating the price table
+
+`prices_generated.json` is generated from a pinned LiteLLM commit. To refresh it:
+
+```bash
+sha=$(curl -s https://api.github.com/repos/BerriAI/litellm/commits/main | jq -r .sha)
+date=$(curl -s https://api.github.com/repos/BerriAI/litellm/commits/$sha | jq -r .commit.committer.date)
+curl -sfLo /tmp/litellm.json https://raw.githubusercontent.com/BerriAI/litellm/$sha/model_prices_and_context_window.json
+go run ./tools/genprices -in /tmp/litellm.json -commit "$sha" -date "$date" -out prices_generated.json
+go test ./...
+```
+
+The generator validates every name and number and skips entries that fail.
+
 
 ## License
 

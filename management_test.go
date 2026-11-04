@@ -74,11 +74,11 @@ func TestManagementRegisterShape(t *testing.T) {
 		}
 		routes = append(routes, r.Path)
 	}
-	if strings.Join(routes, ",") != "/v0/management/plugins/llm-tracing/summary,/v0/management/plugins/llm-tracing/traces,/v0/management/plugins/llm-tracing/trace" {
+	if strings.Join(routes, ",") != "/v0/management/plugins/llm-tracing/summary,/v0/management/plugins/llm-tracing/traces,/v0/management/plugins/llm-tracing/trace,/v0/management/plugins/llm-tracing/sessions" {
 		t.Fatalf("routes: %v", routes)
 	}
 	res := env.Result.Resources
-	if len(res) != 3 || res[0].Path != "/dashboard" || res[0].Menu != "LLM Tracing" || res[0].Description != "Recent requests, attempts, latency and tokens" ||
+	if len(res) != 3 || res[0].Path != "/dashboard" || res[0].Menu != "LLM Tracing" || res[0].Description != "Recent requests, sessions, cost, latency and tokens" ||
 		res[1].Path != "/dashboard.css" || res[2].Path != "/dashboard.js" || res[1].Menu != "" || res[2].Menu != "" {
 		t.Fatalf("resources: %+v", res)
 	}

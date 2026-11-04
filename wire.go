@@ -79,4 +79,9 @@ type requestCompletion struct {
 	CompletedAt    time.Time
 }
 
-const outcomeSucceeded = "succeeded"
+const (
+	outcomeSucceeded = "succeeded"
+	// outcomeCanceled: the client went away (for example Esc in a coding
+	// agent). It is counted separately, not as an error.
+	outcomeCanceled = "canceled"
+)
