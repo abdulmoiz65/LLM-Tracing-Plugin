@@ -128,7 +128,7 @@ func TestUIWorksWithoutEndpoint(t *testing.T) {
 	clock := newFakeClock()
 	p, logs := newTestPlugin(t, clock)
 	p.autoLoop = true
-	if _, err := p.dispatch("plugin.register", registerFixture("enabled: true\npriority: 0\n", 10)); err != nil {
+	if _, err := p.dispatch("plugin.register", registerFixture("enabled: true\npriority: 0\n"+ownDataDir(t), 10)); err != nil {
 		t.Fatal(err)
 	}
 	p.mu.Lock()

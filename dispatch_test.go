@@ -307,7 +307,7 @@ func TestQuiesceFlushesAndLoopStops(t *testing.T) {
 	clock := newFakeClock()
 	p, _ := newTestPlugin(t, clock)
 	p.autoLoop = true
-	if _, err := p.dispatch("plugin.register", registerFixture("endpoint: "+c.endpoint()+"\n", 10)); err != nil {
+	if _, err := p.dispatch("plugin.register", registerFixture("endpoint: "+c.endpoint()+"\n"+ownDataDir(t), 10)); err != nil {
 		t.Fatal(err)
 	}
 	p.mu.Lock()

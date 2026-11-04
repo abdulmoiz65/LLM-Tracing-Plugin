@@ -3,8 +3,16 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 )
+
+// ownDataDir is a config line giving a test that runs the real background
+// loop its own history folder, so it never loads history saved by others.
+func ownDataDir(t *testing.T) string {
+	t.Helper()
+	return "data_dir: \"" + filepath.ToSlash(t.TempDir()) + "\"\n"
+}
 
 // TestMain runs the tests inside a temporary working directory: tests that
 // drive the process-wide plugin instance save history to the default
