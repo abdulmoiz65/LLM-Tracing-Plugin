@@ -1,6 +1,7 @@
 # CPA test configuration for the llm-tracing e2e harness (v8 layout).
 # run.sh renders this template into run/config.yaml, replacing __E2E_RUN__ with the absolute
-# run directory and __PLUGINS_ENABLED__ with true/false. CPA may rewrite the rendered copy
+# run directory, __PLUGINS_ENABLED__ with true/false and __OTLP_ENDPOINT__ with the receiver URL
+# (or "" for the no-export run). CPA may rewrite the rendered copy
 # (for example it hashes the management secret), so the template itself is never passed to CPA.
 config-version: 8
 
@@ -12,8 +13,10 @@ server:
 
 management:
   allow-remote: false
-  # Own secret so the usage queue can be inspected (GET /v8/management/observability/usage/queue).
-  secret-key: "e2e-mgmt-secret"
+  # Plaintext management key (CPA hashes it in the rendered copy on start). Used for the usage queue
+  # and the llm-tracing Traces API under /v0/management/plugins/llm-tracing/. Keep in sync with
+  # MGMT_KEY in run.sh and mgmtKey in cmd/verify/api.go.
+  secret-key: "e2e-mgmt-key-0001"
   disable-control-panel: true
   disable-auto-update-panel: true
 
@@ -92,7 +95,8 @@ plugins:
     llm-tracing:
       enabled: true
       priority: 1
-      endpoint: "http://127.0.0.1:4318/v1/traces"
+      # Harness receiver on 14318 (4318 may be taken by a real Jaeger/collector).
+      endpoint: "__OTLP_ENDPOINT__"
       service_name: "cpa-e2e"
       sample_rate: 1.0
       completion_grace_ms: 500

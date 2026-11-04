@@ -10,6 +10,11 @@ import (
 
 // synthetic builds an OTLP JSON export the way the plugin is expected to emit it.
 func synthetic(scenarios []scenario, leak string) []byte {
+	return syntheticWith(scenarios, leak, nil)
+}
+
+// syntheticWith also appends extra attributes to every attempt span.
+func syntheticWith(scenarios []scenario, leak string, extra []map[string]any) []byte {
 	type kv = map[string]any
 	str := func(k, v string) kv { return kv{"key": k, "value": kv{"stringValue": v}} }
 	num := func(k string, v int) kv { return kv{"key": k, "value": kv{"intValue": fmt.Sprint(v)}} }
@@ -32,11 +37,17 @@ func synthetic(scenarios []scenario, leak string) []byte {
 			rootCode = 2
 		}
 		rootAttrs := []any{str(attrRequestModel, s.Model), str(attrClientKey, "e2e-...0001"+leak), str(attrOutcome, "x")}
+		if s.Kind != "fail" {
+			rootAttrs = append(rootAttrs, num(attrTotalInput, expectedTotalInputToks))
+		}
 		spans = append(spans, kv{"traceId": traceID, "spanId": rootID, "name": rootSpanPrefix + " chat", "startTimeUnixNano": fmt.Sprint(start), "endTimeUnixNano": fmt.Sprint(start + 5e6), "attributes": rootAttrs, "status": kv{"code": rootCode}})
 		for j, a := range atts {
 			attrs := []any{num(attrHTTPStatus, a.http), num(attrAttempt, j+1)}
 			if a.code == 1 {
-				attrs = append(attrs, num(attrInputTokens, 42), num(attrOutputTokens, 7))
+				attrs = append(attrs, num(attrInputTokens, 42), num(attrOutputTokens, 7), num(attrTotalInput, expectedTotalInputToks), num(attrCacheRead, expectedCachedToks))
+			}
+			for _, e := range extra {
+				attrs = append(attrs, e)
 			}
 			spans = append(spans, kv{"traceId": traceID, "spanId": fmt.Sprintf("%016x", 2000+i*10+j), "parentSpanId": rootID, "name": attemptSpanPrefix, "startTimeUnixNano": fmt.Sprint(start + int64(j+1)*1e6), "endTimeUnixNano": fmt.Sprint(start + int64(j+2)*1e6), "attributes": attrs, "status": kv{"code": a.code}})
 		}
@@ -66,5 +77,16 @@ func TestVerifyTracesSynthetic(t *testing.T) {
 		if (c.failures == 0) != tc.ok {
 			t.Fatalf("leak=%q: failures=%d, want ok=%v", tc.leak, c.failures, tc.ok)
 		}
+	}
+	// An exported account label (export_account_labels defaults to false) must fail the run.
+	path := filepath.Join(dir, "dump.json")
+	label := map[string]any{"key": attrAccount, "value": map[string]any{"stringValue": "apikey · 0123abcd"}}
+	if err := os.WriteFile(path, syntheticWith(scenarios, "", []map[string]any{label}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &checker{}
+	verifyTraces(c, path, scenarios)
+	if c.failures == 0 {
+		t.Fatal("exported cpa.account was not detected")
 	}
 }

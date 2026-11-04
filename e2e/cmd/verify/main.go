@@ -25,6 +25,9 @@ const (
 	attrResponseModel  = "gen_ai.response.model"
 	attrInputTokens    = "gen_ai.usage.input_tokens"
 	attrOutputTokens   = "gen_ai.usage.output_tokens"
+	attrTotalInput     = "cpa.usage.total_input_tokens"
+	attrCacheRead      = "cpa.usage.cache_read_tokens"
+	attrAccount        = "cpa.account" // only with export_account_labels: true
 	attrHTTPStatus     = "http.response.status_code"
 	attrClientKey      = "cpa.client_key"
 	attrProvider       = "gen_ai.system" // display only
@@ -33,14 +36,21 @@ const (
 	expectedService    = "cpa-e2e"
 	expectedInputToks  = 42
 	expectedOutputToks = 7
+	// The mock reports prompt_tokens_details.cached_tokens=30. OpenAI semantics: cached tokens are
+	// part of prompt_tokens, so the total input stays 42 (no double counting).
+	expectedCachedToks     = 30
+	expectedTotalInputToks = 42
+	// oauthFixtureEmail is the e-mail of the disabled auth file run.sh puts into auths/ so the
+	// plugin's host.auth.list lookup has one entry; it must never reach the OTLP dump.
+	oauthFixtureEmail = "e2e-oauth-fixture@example.com"
 
 	statusUnset = 0
 	statusOK    = 1
 	statusError = 2
 )
 
-// Strings that must never appear anywhere in the trace dump.
-var forbiddenStrings = []string{"e2e-client-key-0001", "sk-should-be-redacted-123456"}
+// Strings that must never appear anywhere in the trace dump or any API response.
+var forbiddenStrings = []string{"e2e-client-key-0001", "sk-should-be-redacted-123456", mgmtKey, "mock-ok", "mock-429", "mock-500", oauthFixtureEmail}
 
 var (
 	traceIDRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -368,6 +378,13 @@ func verifyTraces(c *checker, dumpPath string, scenarios []scenario) {
 	}
 
 	c.check(c.failures == spanFailuresBefore, "all %d spans: valid 32-hex traceId, 16-hex spanId, resource service.name=%q", len(spans), expectedService)
+	labelled := 0
+	for i := range spans {
+		if _, ok := spans[i].attrs[attrAccount]; ok {
+			labelled++
+		}
+	}
+	c.check(labelled == 0, "no span carries %s (export_account_labels defaults to false; %d found)", attrAccount, labelled)
 
 	traces := make([]*trace, 0, len(order))
 	for _, id := range order {
@@ -436,6 +453,9 @@ func verifyTraces(c *checker, dumpPath string, scenarios []scenario) {
 		if s.Kind == "success" || s.Kind == "retry" {
 			c.check(last.attrs[attrInputTokens] == strconv.Itoa(expectedInputToks), "%s: successful attempt %s=%d (got %q)", name, attrInputTokens, expectedInputToks, last.attrs[attrInputTokens])
 			c.check(last.attrs[attrOutputTokens] == strconv.Itoa(expectedOutputToks), "%s: successful attempt %s=%d (got %q)", name, attrOutputTokens, expectedOutputToks, last.attrs[attrOutputTokens])
+			c.check(last.attrs[attrCacheRead] == strconv.Itoa(expectedCachedToks), "%s: successful attempt %s=%d (got %q)", name, attrCacheRead, expectedCachedToks, last.attrs[attrCacheRead])
+			c.check(last.attrs[attrTotalInput] == strconv.Itoa(expectedTotalInputToks), "%s: successful attempt %s=%d, cached tokens not double counted (got %q)", name, attrTotalInput, expectedTotalInputToks, last.attrs[attrTotalInput])
+			c.check(t.root.attrs[attrTotalInput] == strconv.Itoa(expectedTotalInputToks), "%s: root %s=%d (got %q)", name, attrTotalInput, expectedTotalInputToks, t.root.attrs[attrTotalInput])
 		}
 		if ck, ok := t.root.attrs[attrClientKey]; ok {
 			c.check(ck != "" && !strings.Contains(ck, "e2e-client-key-0001"), "%s: root %s is masked (%q)", name, attrClientKey, ck)
@@ -450,9 +470,26 @@ func main() {
 	dump := flag.String("dump", "", "receiver dump JSON (default <run>/dump.json)")
 	harnessOnly := flag.Bool("harness-only", false, "skip trace assertions (no plugin loaded)")
 	countRoots := flag.Bool("count-roots", false, "print the number of root spans in the dump and exit")
+	apiMode := flag.Bool("api", false, "verify the v0.2.0 Traces API artifacts (api_*.json) instead of the OTLP dump")
+	noExport := flag.Bool("no-export", false, "with -api: the run used endpoint \"\" (no OTLP export expected)")
+	receiverBefore := flag.String("receiver-before", "", "with -no-export: receiver dump taken before the run")
+	receiverAfter := flag.String("receiver-after", "", "with -no-export: receiver dump taken after the run")
+	apiTraceID := flag.String("api-trace-id", "", "print the /traces trace_id of the named scenario and exit")
 	flag.Parse()
 	if *dump == "" {
 		*dump = filepath.Join(*runDir, "dump.json")
+	}
+	if *apiTraceID != "" {
+		id, errID := apiTraceIDFor(*runDir, *apiTraceID)
+		if errID != nil {
+			fmt.Fprintln(os.Stderr, errID)
+			os.Exit(1)
+		}
+		fmt.Println(id)
+		return
+	}
+	if *apiMode {
+		os.Exit(runAPI(*runDir, *dump, *noExport, *receiverBefore, *receiverAfter))
 	}
 	if *countRoots {
 		spans, _, errLoad := loadSpans(*dump)

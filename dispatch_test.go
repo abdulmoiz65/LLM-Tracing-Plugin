@@ -131,11 +131,12 @@ func TestDispatchHostShapedPayloads(t *testing.T) {
 	if err := json.Unmarshal(env, &reg); err != nil || !reg.OK {
 		t.Fatalf("envelope: %s", env)
 	}
-	if reg.Result.SchemaVersion != 10 || reg.Result.Metadata.Name != "LLM Tracing" || reg.Result.Metadata.Version != "0.1.0" ||
+	if reg.Result.SchemaVersion != 10 || reg.Result.Metadata.Name != "LLM Tracing" || reg.Result.Metadata.Version != "0.2.0" ||
 		reg.Result.Metadata.Author != pluginAuthor || reg.Result.Metadata.GitHubRepository == "" {
 		t.Fatalf("registration: %+v", reg.Result)
 	}
-	if !reg.Result.Capabilities["usage_plugin"] || !reg.Result.Capabilities["request_lifecycle_plugin"] || len(reg.Result.Capabilities) != 2 {
+	if !reg.Result.Capabilities["usage_plugin"] || !reg.Result.Capabilities["request_lifecycle_plugin"] ||
+		!reg.Result.Capabilities["management_api"] || len(reg.Result.Capabilities) != 3 {
 		t.Fatalf("capabilities: %v", reg.Result.Capabilities)
 	}
 	if len(reg.Result.Metadata.ConfigFields) < 10 || reg.Result.Metadata.ConfigFields[0].Name != "endpoint" {

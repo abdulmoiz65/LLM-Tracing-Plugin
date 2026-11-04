@@ -383,7 +383,9 @@ func TestReconfigureKeepsBufferedData(t *testing.T) {
 	}
 
 	tr.addCompletion(completionAt("gone", baseTime, baseTime.Add(time.Second), outcomeSucceeded, 200))
-	tr.reconfigure(defaultConfig()) // empty endpoint: no-op, buffers released
+	off := defaultConfig()
+	off.UIEnabled = false
+	tr.reconfigure(off) // no endpoint and no Traces page: no-op, buffers released
 	if tr.pendingLen() != 0 || tr.queueLen() != 0 {
 		t.Fatalf("disabled plugin must not buffer")
 	}

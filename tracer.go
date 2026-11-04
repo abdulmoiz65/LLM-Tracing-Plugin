@@ -58,6 +58,9 @@ type tombstone struct {
 	attempts   int
 	expires    time.Time
 	dead       bool
+	// exported reports whether the trace went to the OTLP exporter (it was
+	// sampled in); late spans follow the same decision.
+	exported bool
 }
 
 type counters struct {
@@ -93,6 +96,15 @@ type tracer struct {
 	logger   func(level, message string)
 
 	exp *exporter
+
+	// store keeps recent traces for the built-in Traces page.
+	store *traceStore
+	// accounts caches credential labels from host.auth.list. It is never
+	// refreshed on the request path; spans only read its snapshot.
+	accounts *accountResolver
+	// lastExportErr and lastExportAt describe the exporter for the page.
+	lastExportErr string
+	lastExportAt  time.Time
 }
 
 func newTracer(cfg config, now func() time.Time) *tracer {
@@ -108,32 +120,45 @@ func newTracer(cfg config, now func() time.Time) *tracer {
 		lastLog: map[string]time.Time{},
 		logger:  func(string, string) {},
 		exp:     newExporter(),
+		store:   newTraceStore(),
+
+		accounts: newAccountResolver(hostAuthList),
 	}
 	t.queue.limit = cfg.MaxQueueSpans
 	t.lastStat = now()
+	t.store.configure(cfg.uiActive(), cfg.UIMaxTraces)
 	t.exp.configure(cfg)
 	return t
 }
 
 // reconfigure applies a new config, keeping buffered data while the plugin
-// stays active. Deadlines already scheduled keep their original values.
+// keeps recording. Deadlines already scheduled keep their original values.
+// Without an exporter the export queue is released; without the Traces page
+// the stored traces are released.
 func (t *tracer) reconfigure(cfg config) {
 	t.mu.Lock()
+	if cfg.Endpoint != t.cfg.Endpoint {
+		t.lastExportErr, t.lastExportAt = "", time.Time{}
+	}
 	t.cfg = cfg
-	if !cfg.active() {
+	if !cfg.recording() {
 		t.pending = map[string]*bucket{}
 		t.order.Init()
 		t.tombs = map[string][]*tombstone{}
 		t.tombQ = nil
-		t.queue.clear()
-		t.queue.limit = cfg.MaxQueueSpans
 	} else {
-		t.stats.queueDropped += uint64(t.queue.setLimit(cfg.MaxQueueSpans))
 		for len(t.pending) > cfg.MaxPendingTraces {
 			t.evictOldestLocked()
 		}
 		t.pruneTombsLocked(t.now())
 	}
+	if !cfg.active() {
+		t.queue.clear()
+		t.queue.limit = cfg.MaxQueueSpans
+	} else {
+		t.stats.queueDropped += uint64(t.queue.setLimit(cfg.MaxQueueSpans))
+	}
+	t.store.configure(cfg.uiActive(), cfg.UIMaxTraces)
 	t.mu.Unlock()
 	t.exp.configure(cfg)
 }
@@ -158,6 +183,30 @@ func (t *tracer) sampledLocked(key string) bool {
 	return float64(binary.BigEndian.Uint64(sum[:8])>>11)/float64(uint64(1)<<53) < rate
 }
 
+// keepLocked reports whether events of a trace are buffered at all. The
+// Traces page shows every request regardless of sample_rate, so sampling
+// only drops data early when the page is off.
+func (t *tracer) keepLocked(key string) bool {
+	if t.cfg.uiActive() || t.sampledLocked(key) {
+		return true
+	}
+	t.stats.sampledOut++
+	return false
+}
+
+// exportLocked decides, when a trace is finalized, whether its spans go to
+// the OTLP exporter.
+func (t *tracer) exportLocked(key string) bool {
+	if !t.cfg.active() {
+		return false
+	}
+	if !t.sampledLocked(key) {
+		t.stats.sampledOut++
+		return false
+	}
+	return true
+}
+
 func contains(c *requestCompletion, at time.Time) bool {
 	if at.IsZero() || c.StartedAt.IsZero() || c.CompletedAt.IsZero() {
 		return true
@@ -169,11 +218,7 @@ func contains(c *requestCompletion, at time.Time) bool {
 func (t *tracer) addCompletion(c requestCompletion) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if !t.cfg.active() {
-		return
-	}
-	if !t.sampledLocked(nonEmpty(c.TraceID, c.RequestID)) {
-		t.stats.sampledOut++
+	if !t.cfg.recording() || !t.keepLocked(nonEmpty(c.TraceID, c.RequestID)) {
 		return
 	}
 	now := t.now()
@@ -201,17 +246,20 @@ func (t *tracer) addCompletion(c requestCompletion) {
 func (t *tracer) addUsage(u usageRecord) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if !t.cfg.active() {
-		return
-	}
-	if !t.sampledLocked(nonEmpty(u.TraceID, u.RequestID)) {
-		t.stats.sampledOut++
+	if !t.cfg.recording() || !t.keepLocked(nonEmpty(u.TraceID, u.RequestID)) {
 		return
 	}
 	now := t.now()
 	if u.TraceID == "" {
-		// No parent request: export as a single-span trace.
-		t.enqueueLocked(buildAttemptSpan(&u, newTraceID(), newSpanID(), spanID{}, 1, t.cfg.CaptureErrorBody))
+		// No parent request: a single-span trace.
+		tid := newTraceID()
+		span := t.attemptSpanLocked(&u, tid, newSpanID(), spanID{}, 1)
+		if t.exportLocked(u.RequestID) {
+			t.enqueueLocked(span)
+		}
+		if t.cfg.uiActive() {
+			t.store.add(newUITrace(tid, nil, []otlpSpan{span}))
+		}
 		return
 	}
 	if b := t.pending[u.TraceID]; b != nil {
@@ -230,7 +278,13 @@ func (t *tracer) addUsage(u usageRecord) {
 	if ts := t.findTombLocked(u.TraceID, u.RequestedAt); ts != nil {
 		ts.attempts++
 		t.stats.lateAttached++
-		t.enqueueLocked(buildAttemptSpan(&u, ts.trace, newSpanID(), ts.root, ts.attempts, t.cfg.CaptureErrorBody))
+		span := t.attemptSpanLocked(&u, ts.trace, newSpanID(), ts.root, ts.attempts)
+		if ts.exported && t.cfg.active() {
+			t.enqueueLocked(span)
+		}
+		if t.cfg.uiActive() {
+			t.store.addLateAttempt(ts.trace, &span)
+		}
 		return
 	}
 	b := t.bucketLocked(u.TraceID)
@@ -349,10 +403,8 @@ func (t *tracer) emitCompletionLocked(pc *pendingCompletion, now time.Time) {
 	}
 	sortAttempts(usages)
 	tid, root := newTraceID(), newSpanID()
-	t.enqueueLocked(buildRootSpan(&pc.c, usages, tid, root, now, t.cfg.CaptureErrorBody))
-	for i := range usages {
-		t.enqueueLocked(buildAttemptSpan(&usages[i], tid, newSpanID(), root, i+1, t.cfg.CaptureErrorBody))
-	}
+	exported := t.exportLocked(nonEmpty(pc.c.TraceID, pc.c.RequestID))
+	t.emitTraceLocked(tid, buildRootSpan(&pc.c, usages, tid, root, now, t.cfg.CaptureErrorBody), usages, root, exported)
 	if pc.c.TraceID == "" {
 		return
 	}
@@ -360,7 +412,7 @@ func (t *tracer) emitCompletionLocked(pc *pendingCompletion, now time.Time) {
 	if end.IsZero() {
 		end = now
 	}
-	ts := &tombstone{key: pc.c.TraceID, trace: tid, root: root, start: start, end: end, attempts: len(usages), expires: now.Add(t.cfg.OrphanTimeout)}
+	ts := &tombstone{key: pc.c.TraceID, trace: tid, root: root, start: start, end: end, attempts: len(usages), expires: now.Add(t.cfg.OrphanTimeout), exported: exported}
 	t.tombs[ts.key] = append(t.tombs[ts.key], ts)
 	t.tombQ = append(t.tombQ, ts)
 	t.pruneTombsLocked(now)
@@ -370,10 +422,45 @@ func (t *tracer) emitOrphansLocked(key string, usages []usageRecord) {
 	sortAttempts(usages)
 	tid, root := newTraceID(), newSpanID()
 	t.stats.syntheticRoots++
-	t.enqueueLocked(buildSyntheticRootSpan(key, usages, tid, root))
-	for i := range usages {
-		t.enqueueLocked(buildAttemptSpan(&usages[i], tid, newSpanID(), root, i+1, t.cfg.CaptureErrorBody))
+	t.emitTraceLocked(tid, buildSyntheticRootSpan(key, usages, tid, root), usages, root, t.exportLocked(key))
+}
+
+// emitTraceLocked hands one finalized trace to its consumers: the export
+// queue (when sampled in) and the Traces page store. Both receive the same
+// sanitized spans.
+func (t *tracer) emitTraceLocked(tid traceID, rootSpan otlpSpan, usages []usageRecord, root spanID, exported bool) {
+	ui := t.cfg.uiActive()
+	if !exported && !ui {
+		return
 	}
+	attempts := make([]otlpSpan, len(usages))
+	for i := range usages {
+		attempts[i] = t.attemptSpanLocked(&usages[i], tid, newSpanID(), root, i+1)
+	}
+	if exported {
+		t.enqueueLocked(rootSpan)
+		for i := range attempts {
+			t.enqueueLocked(attempts[i])
+		}
+	}
+	if ui {
+		t.store.add(newUITrace(tid, &rootSpan, attempts))
+	}
+}
+
+// attemptSpanLocked builds one attempt span. With export_account_labels it
+// also carries cpa.account, resolved from the cached host.auth.list snapshot
+// (or the auth type + short index fallback); the host is never called here.
+func (t *tracer) attemptSpanLocked(u *usageRecord, tid traceID, sid, parent spanID, ordinal int) otlpSpan {
+	span := buildAttemptSpan(u, tid, sid, parent, ordinal, t.cfg.CaptureErrorBody)
+	if t.cfg.ExportAccountLabels {
+		if label := accountLabel(t.accounts.snapshot(), u.AuthIndex, u.AuthType); label != "" {
+			a := attrs(span.Attributes)
+			a.str("cpa.account", label)
+			span.Attributes = a
+		}
+	}
+	return span
 }
 
 func (t *tracer) findTombLocked(key string, at time.Time) *tombstone {
@@ -480,10 +567,12 @@ func (t *tracer) flushOnce(ctx context.Context) (int, error) {
 	t.mu.Lock()
 	if err != nil {
 		t.stats.exportDropped += uint64(len(batch))
+		t.lastExportErr = truncateItemError(sanitizeErrorText(err.Error()))
 	} else {
 		rejected = min(max(rejected, 0), int64(len(batch)))
 		t.stats.rejected += uint64(rejected)
 		t.stats.exported += uint64(int64(len(batch)) - rejected)
+		t.lastExportErr, t.lastExportAt = "", t.now()
 	}
 	t.mu.Unlock()
 	if err != nil {

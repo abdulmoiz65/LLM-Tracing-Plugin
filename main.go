@@ -1,5 +1,7 @@
-// Command llm-tracing is a CLIProxyAPI native plugin that exports every
-// proxied LLM request as an OpenTelemetry trace over OTLP/HTTP JSON.
+// Command llm-tracing is a CLIProxyAPI native plugin that turns every
+// proxied LLM request into an OpenTelemetry trace. Traces are exported over
+// OTLP/HTTP JSON and the most recent ones are shown on a built-in Traces page
+// in the Management Center.
 package main
 
 import (
@@ -14,7 +16,7 @@ import (
 const (
 	pluginID      = "llm-tracing"
 	pluginName    = "LLM Tracing"
-	pluginVersion = "0.1.0"
+	pluginVersion = "0.2.0"
 	pluginAuthor  = "abdulmoiz65"
 	pluginRepo    = "https://github.com/abdulmoiz65/LLM-Tracing-Plugin"
 
@@ -39,7 +41,7 @@ type pluginState struct {
 	done     chan struct{}
 	loopCtx  context.Context
 	cancel   context.CancelFunc
-	noopLog  bool
+	modeLog  string
 }
 
 func newPluginState(now func() time.Time, logger func(level, message string), autoLoop bool) *pluginState {
@@ -61,15 +63,18 @@ func (p *pluginState) configure(cfg config, warnings []string) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !cfg.active() {
-		if !p.noopLog {
-			p.noopLog = true
-			p.tracer.logger("info", "llm-tracing: no endpoint configured (or disabled); tracing is a no-op")
-		}
-		return
+	mode := ""
+	switch {
+	case !cfg.recording():
+		mode = "llm-tracing: disabled, or no endpoint and ui_enabled: false; tracing is a no-op"
+	case !cfg.active():
+		mode = "llm-tracing: no endpoint configured; OTLP export is a no-op, recent traces are kept for the Traces page"
 	}
-	p.noopLog = false
-	if p.autoLoop && !p.running {
+	if mode != "" && mode != p.modeLog {
+		p.tracer.logger("info", mode)
+	}
+	p.modeLog = mode
+	if cfg.recording() && p.autoLoop && !p.running {
 		p.startLocked()
 	}
 }
@@ -98,6 +103,11 @@ func (p *pluginState) run(ctx context.Context, stop <-chan struct{}, done chan<-
 		case <-timer.C:
 		}
 		now := t.now()
+		if cfg.ExportAccountLabels && cfg.active() {
+			// Keep the label cache warm for exported spans; the request path
+			// only reads the cached snapshot.
+			t.accounts.refresh(now)
+		}
 		t.sweep(now)
 		if t.queueLen() >= cfg.MaxBatchSpans || now.Sub(lastFlush) >= cfg.FlushInterval {
 			lastFlush = now
@@ -165,6 +175,7 @@ func registration(hostSchema uint32) map[string]any {
 		"capabilities": map[string]bool{
 			"usage_plugin":             true,
 			"request_lifecycle_plugin": true,
+			"management_api":           true,
 		},
 	}
 }
@@ -172,7 +183,7 @@ func registration(hostSchema uint32) map[string]any {
 func configFields() []configField {
 	d := defaultConfig()
 	return []configField{
-		{"endpoint", "string", nil, "OTLP/HTTP traces URL, e.g. http://127.0.0.1:4318/v1/traces or https://cloud.langfuse.com/api/public/otel/v1/traces. Empty disables the plugin."},
+		{"endpoint", "string", nil, "OTLP/HTTP traces URL, e.g. http://127.0.0.1:4318/v1/traces or https://cloud.langfuse.com/api/public/otel/v1/traces. Empty disables export; the Traces page still works."},
 		{"headers", "object", nil, "Extra exporter HTTP headers (e.g. Authorization: Basic <base64 public:secret> for Langfuse, x-honeycomb-team, DD-API-KEY). A map, or a list of \"Key: Value\" strings. Values are never logged."},
 		{"service_name", "string", d.ServiceName, "OpenTelemetry service.name resource attribute."},
 		{"sample_rate", "number", d.SampleRate, "Fraction of traces to keep (0..1). Decided per request trace ID, so all spans of a trace are kept or dropped together."},
@@ -184,6 +195,10 @@ func configFields() []configField {
 		{"flush_interval_ms", "integer", d.FlushInterval.Milliseconds(), "Export interval for queued spans."},
 		{"max_batch_spans", "integer", d.MaxBatchSpans, "Maximum spans per OTLP export request."},
 		{"export_timeout_ms", "integer", d.ExportTimeout.Milliseconds(), "HTTP timeout for one export attempt."},
+		{"ui_enabled", "boolean", d.UIEnabled, "Keep recent traces in memory for the built-in Traces page (Management Center > LLM Tracing). Shows every request regardless of sample_rate."},
+		{"ui_max_traces", "integer", d.UIMaxTraces, "How many recent traces the Traces page keeps (10..5000); the oldest is dropped first."},
+		{"ui_show_account_labels", "boolean", d.UIShowAccountLabels, "Show a readable account label (e-mail, label or auth file name from the host's auth list) for each attempt on the Traces page. Off: only auth type and a short auth index. Never exported unless export_account_labels is on."},
+		{"export_account_labels", "boolean", d.ExportAccountLabels, "Also add the account label as cpa.account to exported attempt spans. Off by default because labels are often e-mail addresses."},
 	}
 }
 
@@ -224,6 +239,16 @@ func (p *pluginState) dispatch(method string, raw []byte) (any, error) {
 		c.TraceID = strings.TrimSpace(c.TraceID)
 		p.tracer.addCompletion(c)
 		return struct{}{}, nil
+	case "management.register":
+		return managementRegistrationResponse(), nil
+	case "management.handle":
+		var req managementRequest
+		if len(raw) > 0 {
+			if err := json.Unmarshal(raw, &req); err != nil {
+				return nil, fmt.Errorf("decode management request: %w", err)
+			}
+		}
+		return p.handleManagement(req), nil
 	case "plugin.quiesce":
 		p.quiesce()
 		return struct{}{}, nil

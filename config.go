@@ -12,6 +12,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	minUITraces = 10
+	maxUITraces = 5000
+)
+
 // config is the validated plugin configuration (plugins.configs.llm-tracing).
 type config struct {
 	Enabled          bool
@@ -27,10 +32,24 @@ type config struct {
 	FlushInterval    time.Duration
 	MaxBatchSpans    int
 	ExportTimeout    time.Duration
+	UIEnabled        bool
+	UIMaxTraces      int
+	// UIShowAccountLabels resolves credential labels (e-mail, label or file
+	// name from host.auth.list) for the management-authenticated Traces page.
+	UIShowAccountLabels bool
+	// ExportAccountLabels adds cpa.account to exported attempt spans.
+	ExportAccountLabels bool
 }
 
-// active reports whether the plugin should record and export anything.
+// active reports whether the OTLP exporter runs (plugin enabled with an endpoint).
 func (c config) active() bool { return c.Enabled && c.Endpoint != "" }
+
+// uiActive reports whether finished traces are kept for the built-in Traces page.
+func (c config) uiActive() bool { return c.Enabled && c.UIEnabled }
+
+// recording reports whether the tracer joins events at all: it does whenever
+// either the exporter or the Traces page consumes them.
+func (c config) recording() bool { return c.active() || c.uiActive() }
 
 func defaultConfig() config {
 	return config{
@@ -46,6 +65,11 @@ func defaultConfig() config {
 		FlushInterval:    time.Second,
 		MaxBatchSpans:    512,
 		ExportTimeout:    10 * time.Second,
+		UIEnabled:        true,
+		UIMaxTraces:      500,
+
+		UIShowAccountLabels: true,
+		ExportAccountLabels: false,
 	}
 }
 
@@ -101,13 +125,10 @@ func parseConfig(raw []byte) (config, []string, error) {
 			warn("sample_rate: expected a number between 0 and 1")
 		}
 	}
-	if v, ok := values["capture_error_body"]; ok && v != nil {
-		if b, okBool := toBool(v); okBool {
-			cfg.CaptureErrorBody = b
-		} else {
-			warn("capture_error_body: expected a boolean")
-		}
-	}
+	boolField(values, "capture_error_body", &cfg.CaptureErrorBody, warn)
+	boolField(values, "ui_enabled", &cfg.UIEnabled, warn)
+	boolField(values, "ui_show_account_labels", &cfg.UIShowAccountLabels, warn)
+	boolField(values, "export_account_labels", &cfg.ExportAccountLabels, warn)
 	durationField(values, "completion_grace_ms", &cfg.CompletionGrace, 0, 5*time.Minute, warn)
 	durationField(values, "orphan_timeout_ms", &cfg.OrphanTimeout, time.Second, 24*time.Hour, warn)
 	durationField(values, "flush_interval_ms", &cfg.FlushInterval, 50*time.Millisecond, time.Minute, warn)
@@ -115,6 +136,7 @@ func parseConfig(raw []byte) (config, []string, error) {
 	intField(values, "max_pending_traces", &cfg.MaxPendingTraces, 1, 1_000_000, warn)
 	intField(values, "max_queue_spans", &cfg.MaxQueueSpans, 1, 1_000_000, warn)
 	intField(values, "max_batch_spans", &cfg.MaxBatchSpans, 1, 10_000, warn)
+	intField(values, "ui_max_traces", &cfg.UIMaxTraces, minUITraces, maxUITraces, warn)
 	return cfg, warnings, nil
 }
 
@@ -212,6 +234,18 @@ func scalarString(v any) string {
 		return ""
 	}
 	return strings.TrimSpace(fmt.Sprint(v))
+}
+
+func boolField(values map[string]any, key string, dst *bool, warn func(string, ...any)) {
+	v, ok := values[key]
+	if !ok || v == nil {
+		return
+	}
+	if b, okBool := toBool(v); okBool {
+		*dst = b
+	} else {
+		warn("%s: expected a boolean", key)
+	}
 }
 
 func durationField(values map[string]any, key string, dst *time.Duration, minimum, maximum time.Duration, warn func(string, ...any)) {

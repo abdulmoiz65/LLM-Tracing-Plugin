@@ -16,10 +16,12 @@ func (id spanID) isZero() bool    { return id == spanID{} }
 
 // tokenTotals accumulates per-attempt token counters for the root span.
 type tokenTotals struct {
-	input, output, reasoning, cached, cacheRead, cacheCreation, total int64
+	input, output, reasoning, cached, cacheRead, cacheCreation, total, totalInput int64
 }
 
-func (t *tokenTotals) add(d usageDetail) {
+func (t *tokenTotals) add(u *usageRecord) {
+	d := u.Detail
+	t.totalInput += normalizeInput(d, u.Provider, u.ExecutorType).total
 	t.input += d.InputTokens
 	t.output += d.OutputTokens
 	t.reasoning += d.ReasoningTokens
@@ -33,6 +35,7 @@ func (t *tokenTotals) add(d usageDetail) {
 // backends that sum generation usage per trace do not double count the root.
 func (t tokenTotals) put(a *attrs) {
 	a.integer("cpa.usage.input_tokens", t.input)
+	a.integer("cpa.usage.total_input_tokens", t.totalInput)
 	a.integer("cpa.usage.output_tokens", t.output)
 	a.integer("cpa.usage.total_tokens", t.total)
 	a.nonZero("cpa.usage.reasoning_tokens", t.reasoning)
@@ -90,7 +93,7 @@ func buildRootSpan(c *requestCompletion, usages []usageRecord, tid traceID, sid 
 	var totals tokenTotals
 	var firstStart, lastEnd time.Time
 	for i := range usages {
-		totals.add(usages[i].Detail)
+		totals.add(&usages[i])
 		if s := usages[i].RequestedAt; !s.IsZero() && (firstStart.IsZero() || s.Before(firstStart)) {
 			firstStart = s
 		}
@@ -168,7 +171,7 @@ func buildSyntheticRootSpan(cpaTraceID string, usages []usageRecord, tid traceID
 	var totals tokenTotals
 	var start, end time.Time
 	for i := range usages {
-		totals.add(usages[i].Detail)
+		totals.add(&usages[i])
 		if s := usages[i].RequestedAt; start.IsZero() || s.Before(start) {
 			start = s
 		}
@@ -234,6 +237,10 @@ func buildAttemptSpan(u *usageRecord, tid traceID, sid, parent spanID, ordinal i
 	a.str("gen_ai.response.model", u.ResponseModel)
 	a.integer("gen_ai.usage.input_tokens", u.Detail.InputTokens)
 	a.integer("gen_ai.usage.output_tokens", u.Detail.OutputTokens)
+	// gen_ai.usage.input_tokens stays the provider-reported value (v0.1.0
+	// semantics; for Claude it excludes cache reads/writes). The normalized
+	// prompt size, cache included exactly once, is cpa.usage.total_input_tokens.
+	a.integer("cpa.usage.total_input_tokens", normalizeInput(u.Detail, u.Provider, u.ExecutorType).total)
 	a.integer("cpa.usage.total_tokens", u.Detail.TotalTokens)
 	a.nonZero("cpa.usage.reasoning_tokens", u.Detail.ReasoningTokens)
 	a.nonZero("cpa.usage.cached_tokens", u.Detail.CachedTokens)

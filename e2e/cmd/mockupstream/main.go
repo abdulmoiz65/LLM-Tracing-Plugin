@@ -24,7 +24,10 @@ import (
 const (
 	promptTokens     = 42
 	completionTokens = 7
-	fakeSecret       = "sk-should-be-redacted-123456"
+	// cachedTokens is reported in prompt_tokens_details.cached_tokens. OpenAI
+	// semantics: it is a subset of prompt_tokens (not added on top).
+	cachedTokens = 30
+	fakeSecret   = "sk-should-be-redacted-123456"
 )
 
 var mockModels = []string{"mock-gpt", "mock-gpt-upstream", "mock-retry", "mock-fail"}
@@ -62,9 +65,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func usageObj() map[string]any {
 	return map[string]any{
-		"prompt_tokens":     promptTokens,
-		"completion_tokens": completionTokens,
-		"total_tokens":      promptTokens + completionTokens,
+		"prompt_tokens":         promptTokens,
+		"completion_tokens":     completionTokens,
+		"total_tokens":          promptTokens + completionTokens,
+		"prompt_tokens_details": map[string]any{"cached_tokens": cachedTokens},
 	}
 }
 
