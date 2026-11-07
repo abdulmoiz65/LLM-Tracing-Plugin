@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/banner.png" alt="Abdul Moiz, Forward Deployed AI Engineer" width="720"></p>
+<p align="center"><img src="assets/banner.png" alt="Abdul Moiz, Forward Deployed Engineer" width="720"></p>
 
 # llm-tracing
 

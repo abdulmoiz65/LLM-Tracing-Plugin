@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+### Changed
+
+- Updated author branding: new avatar logo (round, transparent background), brand orange #FF5B2E, and the new name banner in the README.
+
 ## 0.4.0
 
 ### Added
