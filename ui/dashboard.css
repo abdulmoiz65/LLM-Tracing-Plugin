@@ -107,6 +107,7 @@ button.compact { padding: 3px 10px; font-size: 12px; }
 .section-head h2 { margin: 0; }
 .chip { display: inline-flex; align-items: center; gap: 8px; padding: 2px 4px 2px 10px; border-radius: 999px; background: var(--track); font-size: 12px; }
 .metric .hint.ok { color: var(--ok); }
+.metric .hint.warn { color: var(--warn); font-weight: 600; }
 /* Context gauge: fill width is set through the CSSOM (CSP-safe). */
 .ctx { display: flex; align-items: center; gap: 8px; min-width: 150px; white-space: nowrap; font-size: 12px; }
 .ctx-track { position: relative; flex: 1; min-width: 60px; height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }

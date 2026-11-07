@@ -3,6 +3,7 @@ package main
 import (
 	"math"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -198,7 +199,7 @@ func TestGeneratedTableCoversProviders(t *testing.T) {
 	if src := p.priceSource("claude-opus-5-5"); src != claudeSource {
 		t.Errorf("built-in Claude prices must win over LiteLLM, got %q", src)
 	}
-	if src := p.priceSource("gpt-6-sol"); src != "litellm: openai" {
+	if src := p.priceSource("gpt-6-sol"); !strings.HasPrefix(src, "litellm 20") || !strings.HasSuffix(src, ": openai") {
 		t.Errorf("gpt-6-sol source %q", src)
 	}
 	// Gemini 2.5 Pro charges more above 200k prompt tokens.

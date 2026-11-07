@@ -85,7 +85,7 @@ func newFixture(scenarios []scenario, noExport bool) *fixture {
 	}
 	n := len(scenarios)
 	f.summary = map[string]any{
-		"version": "0.3.0", "window_seconds": 3600, "requests": n, "errors": errs, "error_rate": float64(errs) / float64(n),
+		"version": "0.3.1", "window_seconds": 3600, "requests": n, "errors": errs, "error_rate": float64(errs) / float64(n),
 		"avg_latency_ms": 5.5, "p95_latency_ms": 9.0, "input_tokens": in, "output_tokens": out, "retried_requests": retried,
 		"total_input_tokens": in, "cache_read_tokens": read, "cache_hit_rate": expectedHitRate,
 		"providers":      []string{providerBroken, providerOK},

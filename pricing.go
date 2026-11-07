@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 )
 
@@ -114,7 +115,7 @@ var loadGenerated = sync.OnceValues(func() (*priceTable, generatedMeta) {
 		p := modelPrice{
 			Input: num(row[0]), Output: num(row[1]), CacheRead: num(row[2]), CacheWrite: num(row[3]), CacheWrite1h: num(row[4]),
 			LongThreshold: int64(num(row[6])), LongInput: num(row[7]), LongOutput: num(row[8]), LongCacheRead: num(row[9]),
-			Source: "litellm: " + source,
+			Source: "litellm " + shortDate(raw.Date) + ": " + source,
 		}
 		table.prices[name] = p
 		if ctx := int64(num(row[5])); ctx > 0 {
@@ -123,6 +124,28 @@ var loadGenerated = sync.OnceValues(func() (*priceTable, generatedMeta) {
 	}
 	return table, generatedMeta{Commit: raw.Commit, Date: raw.Date, Models: len(table.prices)}
 })
+
+func shortDate(date string) string {
+	if len(date) > 10 {
+		return date[:10]
+	}
+	return date
+}
+
+// pricesAgeDays is how old the bundled price snapshot (the LiteLLM table,
+// refreshed with every release) is at now.
+func pricesAgeDays(now time.Time) int {
+	_, meta := loadGenerated()
+	at, err := time.Parse(time.RFC3339, meta.Date)
+	if err != nil {
+		return 0
+	}
+	return max(int(now.Sub(at).Hours()/24), 0)
+}
+
+// pricesStaleDays: after this many days the page warns that prices may be
+// out of date.
+const pricesStaleDays = 30
 
 // pricesAsOfText dates both price sources for the page.
 func pricesAsOfText() string {
@@ -303,9 +326,14 @@ func (p *pricer) writeIs1h(provider, authType string) bool {
 // attemptCost is the API-list-price cost of one attempt and what the same
 // tokens would have cost with no prompt cache (every input token at the
 // input rate). ok is false when tokens were used but the model has no price.
+//
+// costMin equals cost unless the cache write TTL was guessed (cache_write_ttl:
+// auto on a Claude OAuth account): then cost uses the 1-hour rate and costMin
+// the 5-minute rate, so the true cost lies between them.
 type attemptCost struct {
-	cost, noCache float64
-	ok            bool
+	cost, costMin, noCache float64
+	ok                     bool
+	source                 string
 }
 
 func (p *pricer) cost(model, provider, authType string, tok spanTokens) attemptCost {
@@ -315,7 +343,7 @@ func (p *pricer) cost(model, provider, authType string, tok spanTokens) attemptC
 		output += tok.reasoning
 	}
 	if tok.totalInput <= 0 && output <= 0 {
-		return attemptCost{ok: true}
+		return attemptCost{ok: true, source: "no tokens"}
 	}
 	price, ok := p.price(model)
 	if !ok {
@@ -336,6 +364,8 @@ func (p *pricer) cost(model, provider, authType string, tok spanTokens) attemptC
 		write *= scale
 		write1h *= scale
 	}
+	write5m := write
+	guessed := false
 	if p.writeIs1h(provider, authType) {
 		switch {
 		case write1h > 0:
@@ -343,10 +373,16 @@ func (p *pricer) cost(model, provider, authType string, tok spanTokens) attemptC
 		case tokenSemanticsFor(provider, "") == semanticsIndependent:
 			write = in * 2
 		}
+		guessed = p.cacheTTL == cacheTTLAuto && tok.cacheWrite > 0 && write != write5m
 	}
-	cost := float64(tok.uncached)*in + float64(tok.cacheRead)*read + float64(tok.cacheWrite)*write + float64(output)*out
+	base := float64(tok.uncached)*in + float64(tok.cacheRead)*read + float64(output)*out
+	cost := base + float64(tok.cacheWrite)*write
+	costMin := cost
+	if guessed {
+		costMin = base + float64(tok.cacheWrite)*write5m
+	}
 	noCache := float64(tok.totalInput)*in + float64(output)*out
-	return attemptCost{cost: cost / 1e6, noCache: noCache / 1e6, ok: true}
+	return attemptCost{cost: cost / 1e6, costMin: costMin / 1e6, noCache: noCache / 1e6, ok: true, source: price.Source}
 }
 
 // roundUSD keeps six decimals: enough for sub-cent requests, stable in JSON.

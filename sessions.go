@@ -139,6 +139,8 @@ type sessionJSON struct {
 	CostUSD             float64 `json:"cost_usd"`
 	NoCacheCostUSD      float64 `json:"cost_without_cache_usd"`
 	Priced              bool    `json:"priced"`
+	CostMinUSD          float64 `json:"cost_min_usd"`
+	UnknownCostRequests int     `json:"unknown_cost_requests"`
 }
 
 // sessions lists sessions with activity at or after since (unix nanos; 0:
@@ -198,8 +200,12 @@ func (s *traceStore) sessionRowLocked(sess *uiSession, now time.Time, labels map
 		row.OutputTokens += t.output
 		c := s.costLocked(t)
 		row.CostUSD += c.cost
+		row.CostMinUSD += c.costMin
 		row.NoCacheCostUSD += c.noCache
 		row.Priced = row.Priced && c.priced
+		if c.unknown {
+			row.UnknownCostRequests++
+		}
 		if t.servingPrompt > 0 {
 			if prompted == 0 {
 				firstPrompt = t.servingPrompt
@@ -219,6 +225,7 @@ func (s *traceStore) sessionRowLocked(sess *uiSession, now time.Time, labels map
 	row.FirstContextTokens, row.ContextTokens = firstPrompt, lastPrompt
 	row.CacheHitRate = cacheHitRate(row.CacheReadTokens, row.TotalInputTokens)
 	row.CostUSD, row.NoCacheCostUSD = roundUSD(row.CostUSD), roundUSD(row.NoCacheCostUSD)
+	row.CostMinUSD = roundUSD(row.CostMinUSD)
 	row.ContextWindow = s.models.contextWindow(nonEmpty(row.ServingModel, row.Model))
 	if row.ContextWindow > 0 && lastPrompt > 0 {
 		row.ContextUsed = roundTo(float64(lastPrompt)/float64(row.ContextWindow), 1e4)

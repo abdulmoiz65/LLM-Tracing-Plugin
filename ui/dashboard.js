@@ -104,16 +104,31 @@
     if (n < 1000) return '$' + n.toFixed(2);
     return '$' + fmtCompact(n);
   }
+  // hasRange: the cache write type was guessed, so the cost is a range.
+  function hasRange(t) {
+    return num(t.cost_min_usd) > 0 && num(t.cost_min_usd) < num(t.cost_usd) * 0.995;
+  }
+  // Row and session costs show the upper value; '+' marks a partial total.
   function costText(t) {
-    const priced = t.priced !== false;
-    if (!priced && num(t.cost_usd) === 0) return '-';
-    return fmtUSD(t.cost_usd) + (priced ? '' : '+');
+    if (t.cost_unknown) return 'unknown';
+    const partial = t.priced === false || num(t.unknown_cost_requests) > 0;
+    if (t.priced === false && num(t.cost_usd) === 0) return '-';
+    return (hasRange(t) ? '≤ ' : '') + fmtUSD(t.cost_usd) + (partial ? '+' : '');
   }
   function costTitle(t) {
-    const parts = ['Estimated at API list prices' + (str(t.price_source) ? ' (' + str(t.price_source) + ')' : '')];
+    if (t.cost_unknown) {
+      return 'Canceled before the provider reported usage. It may still have billed the part it generated, so the cost is unknown (not counted).';
+    }
+    const parts = ['Estimated at API list prices' + (str(t.price_source) ? ' (' + str(t.price_source) + ')' : '') +
+      ', fixed when the request was recorded'];
+    if (hasRange(t)) {
+      parts.push('between ' + fmtUSD(t.cost_min_usd) + ' and ' + fmtUSD(t.cost_usd) +
+        ': the proxy does not tell plugins whether cache writes used the 5-minute or 1-hour cache');
+    }
     const saved = num(t.cost_without_cache_usd) - num(t.cost_usd);
     if (saved > 0) parts.push('cache saved ' + fmtUSD(saved) + ' (would be ' + fmtUSD(t.cost_without_cache_usd) + ')');
     if (t.priced === false) parts.push('no price for some model; add it under pricing in the plugin config');
+    if (num(t.unknown_cost_requests) > 0) parts.push(fmtInt(t.unknown_cost_requests) + ' canceled request(s) with unknown cost not included');
     return parts.join('; ');
   }
   // ctxGauge renders a context-window gauge; warn at 70%, bad at 90%.
@@ -368,15 +383,28 @@
       line.textContent = '';
     }
     const cost = $('m-cost');
-    cost.textContent = num(s.requests) > 0 ? fmtUSD(s.cost_usd) + (num(s.unpriced_requests) > 0 ? '+' : '') : '-';
+    const partial = num(s.unpriced_requests) > 0 || num(s.unknown_cost_requests) > 0 ? '+' : '';
+    if (num(s.requests) === 0) cost.textContent = '-';
+    else if (hasRange(s)) cost.textContent = fmtUSD(s.cost_min_usd) + ' – ' + fmtUSD(s.cost_usd) + partial;
+    else cost.textContent = fmtUSD(s.cost_usd) + partial;
     const savings = num(s.cache_savings_usd);
     const costHint = $('m-cost-hint');
-    costHint.textContent = savings > 0 ? 'cache saved ' + fmtUSD(savings) : 'at API list prices';
-    costHint.classList.toggle('ok', savings > 0);
+    costHint.classList.remove('ok', 'warn');
+    if (s.prices_stale) {
+      costHint.textContent = 'prices ' + fmtInt(s.prices_age_days) + ' days old - update the plugin';
+      costHint.classList.add('warn');
+    } else {
+      costHint.textContent = savings > 0 ? 'cache saved ' + fmtUSD(savings) : 'at API list prices';
+      costHint.classList.toggle('ok', savings > 0);
+    }
     const unpriced = Array.isArray(s.unpriced_models) ? s.unpriced_models.map(str).filter((m) => m) : [];
-    cost.title = 'Estimated at API list prices (' + str(s.prices_as_of) + '). Subscription (OAuth) accounts are not billed per token; ' +
-      'this is what the same tokens would cost through the API. Without the prompt cache: ' + fmtUSD(s.cost_without_cache_usd) + '.' +
-      (unpriced.length ? ' No price for: ' + unpriced.join(', ') + ' (' + fmtInt(s.unpriced_requests) + ' request(s) only partly counted). Add them under pricing in the plugin config.' : '');
+    cost.title = 'What these tokens would cost at API list prices (' + str(s.prices_as_of) + '). This is not a bill: subscription (OAuth) ' +
+      'accounts are not billed per token. Each request keeps the price in effect when it was recorded.' +
+      (hasRange(s) ? ' Shown as a range because the proxy does not tell plugins whether cache writes used the 5-minute or 1-hour cache.' : '') +
+      ' Without the prompt cache: ' + fmtUSD(s.cost_without_cache_usd) + '.' +
+      (s.prices_stale ? ' The bundled prices are ' + fmtInt(s.prices_age_days) + ' days old: update the plugin, or set current prices under pricing in the plugin config.' : '') +
+      (unpriced.length ? ' No price for: ' + unpriced.join(', ') + ' (' + fmtInt(s.unpriced_requests) + ' request(s) only partly counted). Add them under pricing in the plugin config.' : '') +
+      (num(s.unknown_cost_requests) > 0 ? ' ' + fmtInt(s.unknown_cost_requests) + ' canceled request(s) have unknown cost and are not included.' : '');
     $('m-errors').textContent = fmtPercent(s.error_rate);
     $('m-errors-hint').textContent = fmtInt(s.errors) + ' failed' + (num(s.canceled) > 0 ? ' · ' + fmtInt(s.canceled) + ' canceled (not counted)' : '');
     $('m-latency').textContent = fmtDuration(s.avg_latency_ms) + ' / ' + fmtDuration(s.p95_latency_ms);
@@ -616,7 +644,10 @@
     metaItem(meta, 'Input breakdown', fmtInt(uncachedOf(t)) + ' uncached · ' + fmtInt(t.cache_read_tokens) +
       ' cache read · ' + fmtInt(t.cache_creation_tokens) + ' cache write');
     metaItem(meta, 'Cache hit rate', num(t.total_input_tokens) > 0 ? fmtPercent(t.cache_hit_rate) : '-');
-    metaItem(meta, 'Est. cost', costText(t) + (num(t.cost_without_cache_usd) > num(t.cost_usd) ? ' (without cache ' + fmtUSD(t.cost_without_cache_usd) + ')' : ''));
+    metaItem(meta, 'Est. API cost', (t.cost_unknown ? 'unknown (canceled before usage was reported)'
+      : (hasRange(t) ? fmtUSD(t.cost_min_usd) + ' – ' + fmtUSD(t.cost_usd) : costText(t)) +
+        (num(t.cost_without_cache_usd) > num(t.cost_usd) ? ' (without cache ' + fmtUSD(t.cost_without_cache_usd) + ')' : '')));
+    metaItem(meta, 'Price source', str(t.price_source) ? str(t.price_source) + ', fixed when recorded' : '');
     metaItem(meta, 'Context used', num(t.context_window) > 0 && num(t.context_tokens) > 0
       ? fmtInt(t.context_tokens) + ' of ' + fmtInt(t.context_window) + ' (' + fmtPercent(t.context_used) + ')'
       : (num(t.context_tokens) > 0 ? fmtInt(t.context_tokens) + ' (window unknown)' : ''));
@@ -719,7 +750,7 @@
       kv(list, 'Cache hit rate', num(tok.total_input_tokens) > 0 ? fmtPercent(tok.cache_hit_rate) : '');
       kv(list, 'Output', fmtInt(tok.output_tokens));
       kv(list, 'Reasoning', num(tok.reasoning_tokens) > 0 ? fmtInt(tok.reasoning_tokens) : '');
-      kv(list, 'Est. cost', s.cost_usd !== undefined && s.cost_usd !== null ? fmtUSD(s.cost_usd) : '');
+      kv(list, 'Est. cost', s.cost_usd !== undefined && s.cost_usd !== null ? fmtUSD(s.cost_usd) + ' (fixed when recorded)' : '');
       kv(list, 'Auth type', str(a['cpa.auth_type']));
       kv(list, 'Auth index', str(a['cpa.auth_index']));
       kv(list, 'Error', str(a['cpa.error']));

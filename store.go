@@ -28,10 +28,31 @@ const (
 	maxUnpricedModels = 10
 )
 
-// attemptUsage is the costing input of one attempt.
+// attemptUsage is the costing input of one attempt. Its cost is frozen
+// (computed once with the prices in effect when the attempt was recorded and
+// saved with the history), so later price updates never rewrite the past.
+// Attempts without a price stay unfrozen and are priced once a price exists.
 type attemptUsage struct {
 	model, provider, authType string
 	tok                       spanTokens
+
+	frozen                 bool
+	cost, costMin, noCache float64
+	source                 string
+}
+
+// freeze prices the attempt with p unless it is already frozen. It reports
+// whether the attempt changed.
+func (u *attemptUsage) freeze(p *pricer) bool {
+	if u.frozen {
+		return false
+	}
+	c := p.cost(u.model, u.provider, u.authType, u.tok)
+	if !c.ok {
+		return false
+	}
+	u.frozen, u.cost, u.costMin, u.noCache, u.source = true, c.cost, c.costMin, c.noCache, c.source
+	return true
 }
 
 const (
@@ -300,6 +321,7 @@ func (t *uiTrace) addAttempt(s uiSpan) {
 		last.tok.cacheWrite += tok.cacheWrite
 		last.tok.output += tok.output
 		last.tok.reasoning += tok.reasoning
+		last.frozen = false // re-priced with the folded tokens
 	}
 	if !t.hasServing || (t.servingFailed && !s.failed) || (t.servingFailed == s.failed && s.start >= t.servingStart) {
 		t.hasServing, t.servingFailed, t.servingStart = true, s.failed, s.start
@@ -363,25 +385,57 @@ func (s *traceStore) setModels(p *pricer, gap time.Duration) {
 
 // traceCost sums attempt costs at API list prices. priced is false when any
 // attempt used tokens of a model without a price; unpriced names it.
+// unknown is true for a canceled request that reported no usage: the
+// provider may still have billed the part it generated, so its cost is not
+// known (rather than $0). source is the price source of the last priced
+// attempt.
 type traceCost struct {
-	cost, noCache float64
-	priced        bool
-	unpriced      string
+	cost, costMin, noCache float64
+	priced, unknown        bool
+	unpriced, source       string
+}
+
+// freezeLocked freezes every attempt that has a price and reports whether
+// anything changed.
+func (s *traceStore) freezeLocked(t *uiTrace) bool {
+	changed := false
+	for i := range t.usage {
+		changed = t.usage[i].freeze(s.models) || changed
+	}
+	return changed
 }
 
 func (s *traceStore) costLocked(t *uiTrace) traceCost {
 	out := traceCost{priced: true}
-	for _, u := range t.usage {
-		c := s.models.cost(u.model, u.provider, u.authType, u.tok)
-		if !c.ok {
-			out.priced = false
-			if out.unpriced == "" {
-				out.unpriced = nonEmpty(u.model, "(unknown model)")
+	if t.isCanceled() && t.totalInput == 0 && t.output == 0 {
+		out.unknown = true
+	}
+	for i := range t.usage {
+		u := &t.usage[i]
+		if !u.frozen {
+			// Not priced when recorded: use a price that exists now.
+			c := s.models.cost(u.model, u.provider, u.authType, u.tok)
+			if !c.ok {
+				out.priced = false
+				if out.unpriced == "" {
+					out.unpriced = nonEmpty(u.model, "(unknown model)")
+				}
+				continue
+			}
+			out.cost += c.cost
+			out.costMin += c.costMin
+			out.noCache += c.noCache
+			if c.source != "no tokens" {
+				out.source = c.source + " (priced later)"
 			}
 			continue
 		}
-		out.cost += c.cost
-		out.noCache += c.noCache
+		out.cost += u.cost
+		out.costMin += u.costMin
+		out.noCache += u.noCache
+		if u.source != "no tokens" {
+			out.source = u.source
+		}
 	}
 	return out
 }
@@ -446,6 +500,7 @@ func (s *traceStore) pushLocked(t *uiTrace) {
 	if old := s.byID[t.tid]; old != nil {
 		return // already stored (a replayed history record)
 	}
+	s.freezeLocked(t)
 	s.buf = append(s.buf, t)
 	if t.hasSpans {
 		s.detailed++
@@ -475,6 +530,7 @@ func (s *traceStore) addLateAttempt(tid traceID, span *otlpSpan) {
 	defer s.mu.Unlock()
 	if t := s.byID[tid]; t != nil {
 		t.addAttempt(toUISpan(span))
+		s.freezeLocked(t)
 		s.version++
 		if s.persist != nil {
 			s.persist(encodeTrace(t))
@@ -516,6 +572,11 @@ func (s *traceStore) importHistory(loaded []*uiTrace) int {
 	}
 	for _, t := range fresh {
 		s.byID[t.tid] = t
+		// Records saved before 0.3.1 have no frozen cost: price them now and
+		// save them again so the price stays fixed from here on.
+		if s.freezeLocked(t) && s.persist != nil {
+			s.persist(encodeTrace(t))
+		}
 	}
 	s.enforceLocked()
 	s.version++
@@ -570,6 +631,11 @@ type traceItemJSON struct {
 	CostUSD        float64 `json:"cost_usd"`
 	NoCacheCostUSD float64 `json:"cost_without_cache_usd"`
 	Priced         bool    `json:"priced"`
+	// CostMinUSD is the lower bound when the cache write type was guessed
+	// (equal to CostUSD otherwise). CostUnknown marks a canceled request
+	// without usage, whose real cost is not known.
+	CostMinUSD  float64 `json:"cost_min_usd"`
+	CostUnknown bool    `json:"cost_unknown"`
 	// HasDetail is false for older history requests whose attempt spans
 	// are no longer kept (totals only).
 	HasDetail bool `json:"has_detail"`
@@ -676,8 +742,8 @@ func (t *uiTrace) item(labels map[string]string) traceItemJSON {
 func (s *traceStore) decorateLocked(item *traceItemJSON, t *uiTrace, sess *sessionIndex) {
 	c := s.costLocked(t)
 	item.CostUSD, item.NoCacheCostUSD, item.Priced = roundUSD(c.cost), roundUSD(c.noCache), c.priced
+	item.CostMinUSD, item.CostUnknown, item.PriceSource = roundUSD(c.costMin), c.unknown, c.source
 	item.ContextWindow = s.models.contextWindow(nonEmpty(t.servingModel, t.model))
-	item.PriceSource = s.models.priceSource(nonEmpty(t.servingModel, t.model))
 	if item.ContextWindow > 0 && t.servingPrompt > 0 {
 		item.ContextUsed = roundTo(float64(t.servingPrompt)/float64(item.ContextWindow), 1e4)
 	}
@@ -699,7 +765,7 @@ func spanKindName(kind int) string {
 	}
 }
 
-func (t *uiTrace) detail(labels map[string]string, models *pricer) traceDetailJSON {
+func (t *uiTrace) detail(labels map[string]string) traceDetailJSON {
 	out := traceDetailJSON{traceItemJSON: t.item(labels), Spans: make([]spanJSON, 0, len(t.spans))}
 	ordered := make([]*uiSpan, 0, len(t.spans))
 	for i := range t.spans {
@@ -713,6 +779,13 @@ func (t *uiTrace) detail(labels map[string]string, models *pricer) traceDetailJS
 		}
 		return a.start < b.start
 	})
+	// The k-th attempt span (insertion order) belongs to usage entry k.
+	attemptIndex := map[*uiSpan]int{}
+	for i := range t.spans {
+		if t.spans[i].kind == spanKindClient {
+			attemptIndex[&t.spans[i]] = len(attemptIndex)
+		}
+	}
 	for _, s := range ordered {
 		status := "unset"
 		if s.failed {
@@ -741,8 +814,8 @@ func (t *uiTrace) detail(labels map[string]string, models *pricer) traceDetailJS
 			tok := s.tokens()
 			span.Provider = s.str("gen_ai.provider.name")
 			span.Account = accountLabel(labels, s.str("cpa.auth_index"), s.str("cpa.auth_type"))
-			if c := models.cost(attemptModel(s, t.model), span.Provider, s.str("cpa.auth_type"), tok); c.ok {
-				v := roundUSD(c.cost)
+			if k, ok := attemptIndex[s]; ok && k < len(t.usage) && t.usage[k].frozen {
+				v := roundUSD(t.usage[k].cost)
 				span.CostUSD = &v
 			}
 			span.Tokens = &spanTokensJSON{
@@ -842,7 +915,7 @@ func (s *traceStore) get(tid traceID, labels map[string]string) (traceDetailJSON
 	if t == nil {
 		return traceDetailJSON{}, false
 	}
-	d := t.detail(labels, s.models)
+	d := t.detail(labels)
 	s.decorateLocked(&d.traceItemJSON, t, s.sessionsLocked())
 	return d, true
 }
@@ -864,8 +937,15 @@ type summaryStats struct {
 	Canceled int `json:"canceled"`
 	// Cost of the window at API list prices; UnpricedRequests used a model
 	// without a price (their priced attempts are still counted).
-	CostUSD          float64        `json:"cost_usd"`
-	NoCacheCostUSD   float64        `json:"cost_without_cache_usd"`
+	CostUSD        float64 `json:"cost_usd"`
+	CostMinUSD     float64 `json:"cost_min_usd"`
+	NoCacheCostUSD float64 `json:"cost_without_cache_usd"`
+	// UnknownCostRequests are canceled requests without usage.
+	UnknownCostRequests int `json:"unknown_cost_requests"`
+	// PricesAgeDays is the age of the bundled price snapshot; PricesStale is
+	// set after pricesStaleDays.
+	PricesAgeDays    int            `json:"prices_age_days"`
+	PricesStale      bool           `json:"prices_stale"`
 	CacheSavingsUSD  float64        `json:"cache_savings_usd"`
 	UnpricedRequests int            `json:"unpriced_requests"`
 	UnpricedModels   []string       `json:"unpriced_models"`
@@ -927,7 +1007,11 @@ func (s *traceStore) summaryFor(now time.Time, window time.Duration) summaryStat
 		out.OutputTokens += t.output
 		c := s.costLocked(t)
 		out.CostUSD += c.cost
+		out.CostMinUSD += c.costMin
 		out.NoCacheCostUSD += c.noCache
+		if c.unknown {
+			out.UnknownCostRequests++
+		}
 		if !c.priced {
 			out.UnpricedRequests++
 			if !unpriced[c.unpriced] && len(unpriced) < maxUnpricedModels {
@@ -947,6 +1031,9 @@ func (s *traceStore) summaryFor(now time.Time, window time.Duration) summaryStat
 	sort.Strings(out.UnpricedModels)
 	out.CacheSavingsUSD = roundUSD(out.NoCacheCostUSD - out.CostUSD)
 	out.CostUSD, out.NoCacheCostUSD = roundUSD(out.CostUSD), roundUSD(out.NoCacheCostUSD)
+	out.CostMinUSD = roundUSD(out.CostMinUSD)
+	out.PricesAgeDays = pricesAgeDays(now)
+	out.PricesStale = out.PricesAgeDays > pricesStaleDays
 	if oldest > 0 {
 		out.OldestTraceAt = time.Unix(0, oldest).UTC().Format(time.RFC3339Nano)
 		out.NewestTraceAt = time.Unix(0, newest).UTC().Format(time.RFC3339Nano)

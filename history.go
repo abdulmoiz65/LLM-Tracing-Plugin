@@ -318,6 +318,9 @@ type histUsage struct {
 	Provider string   `json:"p,omitempty"`
 	AuthType string   `json:"a,omitempty"`
 	Tok      [7]int64 `json:"t"` // totalInput, uncached, cacheRead, cacheWrite, output, reasoning, input
+	// Frozen cost (0.3.1+): cost, minimum cost, cost without cache, source.
+	Cost   *[3]float64 `json:"c,omitempty"`
+	Source string      `json:"src,omitempty"`
 }
 
 type histRecord struct {
@@ -364,8 +367,12 @@ func encodeTrace(t *uiTrace) []byte {
 	}
 	for _, u := range t.usage {
 		k := u.tok
-		r.Usage = append(r.Usage, histUsage{Model: u.model, Provider: u.provider, AuthType: u.authType,
-			Tok: [7]int64{k.totalInput, k.uncached, k.cacheRead, k.cacheWrite, k.output, k.reasoning, k.input}})
+		hu := histUsage{Model: u.model, Provider: u.provider, AuthType: u.authType,
+			Tok: [7]int64{k.totalInput, k.uncached, k.cacheRead, k.cacheWrite, k.output, k.reasoning, k.input}}
+		if u.frozen {
+			hu.Cost, hu.Source = &[3]float64{u.cost, u.costMin, u.noCache}, u.source
+		}
+		r.Usage = append(r.Usage, hu)
 	}
 	for _, s := range t.spans {
 		hs := histSpan{ID: s.spanID, Parent: s.parentID, Name: s.name, Kind: s.kind, Start: s.start, End: s.end, Failed: s.failed}
@@ -431,9 +438,20 @@ func decodeTrace(line []byte) (*uiTrace, bool) {
 		if !valid {
 			return nil, false
 		}
-		t.usage = append(t.usage, attemptUsage{model: str(u.Model), provider: str(u.Provider), authType: str(u.AuthType),
+		au := attemptUsage{model: str(u.Model), provider: str(u.Provider), authType: str(u.AuthType),
 			tok: spanTokens{totalInput: u.Tok[0], uncached: u.Tok[1], cacheRead: u.Tok[2], cacheWrite: u.Tok[3],
-				output: u.Tok[4], reasoning: u.Tok[5], input: u.Tok[6]}})
+				output: u.Tok[4], reasoning: u.Tok[5], input: u.Tok[6]}}
+		if c := u.Cost; c != nil {
+			ok := true
+			for _, v := range c {
+				ok = ok && v >= 0 && v < 1e7 && v == v
+			}
+			if !ok || c[1] > c[0] {
+				return nil, false
+			}
+			au.frozen, au.cost, au.costMin, au.noCache, au.source = true, c[0], c[1], c[2], str(u.Source)
+		}
+		t.usage = append(t.usage, au)
 	}
 	if len(r.Spans) > 0 && len(r.Spans) <= maxStoredAttempts+1 {
 		t.hasSpans = true

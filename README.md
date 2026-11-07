@@ -169,6 +169,10 @@ Costs are **estimates at the providers' API list prices**, per attempt: uncached
 - A request whose model has no price shows `+` after its cost, and the summary names the unpriced models. Image and video models (Imagen, Grok Imagine) are billed per image or second and are never priced.
 - Model names match exactly or by the longest prefix followed by `-`, `@` or `:` (`claude-opus-5-5-20260401`, `claude-opus-5-5(high)`, Antigravity's `claude-opus-5-5-high` and `us.anthropic.claude-opus-5-5` all use the `claude-opus-5-5` price). A dot never counts as a separator, so `kimi-k2` does not price `kimi-k2.8`, and names without a digit match exactly only.
 - Usage records do not say whether a cache write used the 5-minute (1.25x input) or 1-hour (2x input) cache. With `cache_write_ttl: auto`, Claude OAuth (subscription) accounts use the 1-hour rate, because CPA sends their prompts with the 1-hour cache like Claude Code does, and everything else uses the 5-minute rate.
+- **Costs are fixed when a request is recorded.** Each attempt keeps the price that applied then, saved with the history, so updating the plugin or changing `pricing` never rewrites past costs; it only applies to new requests. An attempt that had no price is priced once one exists.
+- **Range for guessed cache writes.** With `cache_write_ttl: auto`, Claude subscription cache writes are priced at the 1-hour rate and also at the 5-minute rate, and the cost card shows the range between them (rows show the upper value marked `≤`). Set `cache_write_ttl: 5m` or `1h` if you know which one your clients use.
+- **Canceled requests without usage show "unknown"**, not $0, because the provider may have billed the part it generated. Totals that leave them out are marked `+`.
+- **Outdated prices.** The bundled prices are dated; after 30 days the cost card warns. Update the plugin (each release refreshes the table) or set current prices under `pricing`.
 - **Subscription accounts are not billed per token.** For Claude, Codex or Gemini OAuth accounts the cost is what the same tokens would cost through the API, which is useful for comparing usage but is not a bill.
 
 ```yaml

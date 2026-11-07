@@ -157,7 +157,7 @@ func TestUIWorksWithoutEndpoint(t *testing.T) {
 		t.Fatalf("exporter must stay off: n=%d err=%v", n, err)
 	}
 	s := p.tracer.summary()
-	if s.StoredTraces != 1 || s.Requests != 1 || s.RetriedRequests != 1 || s.Exporter.Enabled || s.Exporter.EndpointHost != "" || s.Version != "0.3.0" {
+	if s.StoredTraces != 1 || s.Requests != 1 || s.RetriedRequests != 1 || s.Exporter.Enabled || s.Exporter.EndpointHost != "" || s.Version != "0.3.1" {
 		t.Fatalf("summary wrong: %+v", s)
 	}
 }

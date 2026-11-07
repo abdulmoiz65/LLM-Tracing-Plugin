@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1
+
+### Changed
+
+- **Costs are fixed when a request is recorded.** Each attempt keeps the price that applied then (saved with the history), so a later price update, a new plugin release or a `pricing` change only affects new requests and never rewrites past costs. Attempts without a price stay open and are priced once a price exists (the source then says "priced later"). History saved by 0.3.0 is priced once on load and saved again with fixed prices.
+- **Cost range for Claude subscription cache writes.** The proxy does not tell plugins whether a cache write used the 5-minute or the 1-hour cache, so with `cache_write_ttl: auto` the cost card shows a range (5-minute to 1-hour price), and rows show the upper value marked `≤`. New `cost_min_usd` on `/summary`, `/traces` and `/sessions`.
+- **Canceled requests without usage show "unknown"** instead of $0: the provider may still have billed the part it generated. They are counted in `unknown_cost_requests` and marked `+` on totals.
+- The cost card is now labelled **Est. API cost**; its tooltip says it is what the tokens would cost through the API, not a bill.
+- **Outdated price warning**: `/summary` reports `prices_age_days` and `prices_stale`; after 30 days the cost card asks to update the plugin or set `pricing`.
+- Price sources include the price date (for example `litellm 2026-11-07: openai`), shown in the tooltip and the detail panel.
+- Price table refreshed from LiteLLM (2026-11-07, 1,813 models).
+
 ## 0.3.0
 
 ### Added

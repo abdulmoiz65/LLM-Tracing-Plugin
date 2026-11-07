@@ -17,7 +17,7 @@ import (
 const (
 	pluginID      = "llm-tracing"
 	pluginName    = "LLM Tracing"
-	pluginVersion = "0.3.0"
+	pluginVersion = "0.3.1"
 	pluginAuthor  = "abdulmoiz65"
 	pluginRepo    = "https://github.com/abdulmoiz65/LLM-Tracing-Plugin"
 

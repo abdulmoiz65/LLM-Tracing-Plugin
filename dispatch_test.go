@@ -131,7 +131,7 @@ func TestDispatchHostShapedPayloads(t *testing.T) {
 	if err := json.Unmarshal(env, &reg); err != nil || !reg.OK {
 		t.Fatalf("envelope: %s", env)
 	}
-	if reg.Result.SchemaVersion != 10 || reg.Result.Metadata.Name != "LLM Tracing" || reg.Result.Metadata.Version != "0.3.0" ||
+	if reg.Result.SchemaVersion != 10 || reg.Result.Metadata.Name != "LLM Tracing" || reg.Result.Metadata.Version != "0.3.1" ||
 		reg.Result.Metadata.Author != pluginAuthor || reg.Result.Metadata.GitHubRepository == "" {
 		t.Fatalf("registration: %+v", reg.Result)
 	}
