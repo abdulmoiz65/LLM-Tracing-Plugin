@@ -21,7 +21,7 @@ import (
 const (
 	apiPrefix          = "/v0/management/plugins/llm-tracing"
 	apiResourcePrefix  = "/v0/resource/plugins/llm-tracing"
-	apiExpectedVersion = "0.3.1"
+	apiExpectedVersion = "0.4.0"
 	apiWindowSeconds   = 3600
 	apiClientKeyPrefix = "sha256:"
 	apiTraceNotFound   = "trace not found"

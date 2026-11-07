@@ -74,11 +74,11 @@ func TestManagementRegisterShape(t *testing.T) {
 		}
 		routes = append(routes, r.Path)
 	}
-	if strings.Join(routes, ",") != "/v0/management/plugins/llm-tracing/summary,/v0/management/plugins/llm-tracing/traces,/v0/management/plugins/llm-tracing/trace,/v0/management/plugins/llm-tracing/sessions" {
+	if strings.Join(routes, ",") != "/v0/management/plugins/llm-tracing/summary,/v0/management/plugins/llm-tracing/traces,/v0/management/plugins/llm-tracing/trace,/v0/management/plugins/llm-tracing/sessions,/v0/management/plugins/llm-tracing/insights,/v0/management/plugins/llm-tracing/whatif" {
 		t.Fatalf("routes: %v", routes)
 	}
 	res := env.Result.Resources
-	if len(res) != 3 || res[0].Path != "/dashboard" || res[0].Menu != "LLM Tracing" || res[0].Description != "Recent requests, sessions, cost, latency and tokens" ||
+	if len(res) != 4 || res[3].Path != "/logo.png" || res[3].Menu != "" || res[0].Path != "/dashboard" || res[0].Menu != "LLM Tracing" || res[0].Description != "Requests, sessions, cost, insights and tokens" ||
 		res[1].Path != "/dashboard.css" || res[2].Path != "/dashboard.js" || res[1].Menu != "" || res[2].Menu != "" {
 		t.Fatalf("resources: %+v", res)
 	}
@@ -398,7 +398,17 @@ func TestDashboardAssetsAreStaticAndSafe(t *testing.T) {
 	if !strings.Contains(js, "credentials: 'omit'") || !strings.Contains(js, "cache: 'no-store'") {
 		t.Fatal("dashboard.js fetch must omit credentials and bypass the cache")
 	}
-	html := string(dashboardHTML)
+	// The only external URL allowed is the author link (an <a href> the
+	// user clicks, never something the page loads). Remove that exact
+	// element before checking for any other external URL.
+	const authorLink = `<a class="byline" href="https://github.com/abdulmoiz65" target="_blank" rel="noopener noreferrer">by Abdul Moiz</a>`
+	if strings.Count(string(dashboardHTML), authorLink) != 1 {
+		t.Fatal("author link changed: keep it a plain link with rel=noopener noreferrer")
+	}
+	html := strings.Replace(string(dashboardHTML), authorLink, "", 1)
+	if !strings.Contains(html, `<img class="brand-logo" src="./logo.png"`) {
+		t.Fatal("the header logo must be the plugin's own resource")
+	}
 	if regexp.MustCompile(`<script(\s[^>]*)?>\s*[^<\s]`).MatchString(html) || !strings.Contains(html, `<script src="./dashboard.js" defer></script>`) {
 		t.Fatal("dashboard.html must not contain inline script")
 	}

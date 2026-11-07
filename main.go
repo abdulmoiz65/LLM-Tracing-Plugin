@@ -17,9 +17,12 @@ import (
 const (
 	pluginID      = "llm-tracing"
 	pluginName    = "LLM Tracing"
-	pluginVersion = "0.3.1"
+	pluginVersion = "0.4.0"
 	pluginAuthor  = "abdulmoiz65"
 	pluginRepo    = "https://github.com/abdulmoiz65/LLM-Tracing-Plugin"
+	// pluginLogo is shown by the Management Center's Plugins page and the
+	// Plugin Store (an image URL, like other store plugins use).
+	pluginLogo = "https://raw.githubusercontent.com/abdulmoiz65/LLM-Tracing-Plugin/main/assets/logo.png"
 
 	// pluginSchemaVersion is the newest RPC schema this plugin was written
 	// against (sdk/pluginabi.SchemaVersion). The plugin only needs schema 2+
@@ -231,6 +234,7 @@ func registration(hostSchema uint32) map[string]any {
 			"Version":          pluginVersion,
 			"Author":           pluginAuthor,
 			"GitHubRepository": pluginRepo,
+			"Logo":             pluginLogo,
 			"ConfigFields":     configFields(),
 		},
 		"capabilities": map[string]bool{

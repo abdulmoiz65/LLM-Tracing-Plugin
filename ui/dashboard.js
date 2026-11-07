@@ -11,6 +11,7 @@
   const LIST_LIMIT = 100;
   const SLOW_MS = 10000;
   const SESSION_LIMIT = 20;
+  const INSIGHTS_MS = 30000;
   const RANGE_KEY = 'llm-tracing.range';
   const RANGE_LABELS = { '15m': 'last 15 minutes', '1h': 'last hour', '6h': 'last 6 hours', '24h': 'last 24 hours', '7d': 'last 7 days', all: 'whole history' };
 
@@ -28,6 +29,8 @@
   let busy = false;
   let selectedId = '';
   let modelDebounce = null;
+  let insightsAt = 0;
+  let insightsRange = '';
   let sessionFilter = null; // {id, label} when the table shows one session
 
   // ---------- small DOM helpers ----------
@@ -113,7 +116,7 @@
     if (t.cost_unknown) return 'unknown';
     const partial = t.priced === false || num(t.unknown_cost_requests) > 0;
     if (t.priced === false && num(t.cost_usd) === 0) return '-';
-    return (hasRange(t) ? '≤ ' : '') + fmtUSD(t.cost_usd) + (partial ? '+' : '');
+    return fmtUSD(t.cost_usd) + (partial ? '*' : '');
   }
   function costTitle(t) {
     if (t.cost_unknown) {
@@ -344,6 +347,12 @@
       renderSummary(summary);
       renderSessions(Array.isArray(sessions.sessions) ? sessions.sessions : []);
       renderTraces(Array.isArray(list.traces) ? list.traces : []);
+      // Insights scan the whole history: refresh them every 30 s, not 5 s.
+      if (Date.now() - insightsAt > INSIGHTS_MS || insightsRange !== currentRange()) {
+        insightsAt = Date.now();
+        insightsRange = currentRange();
+        loadInsights().catch(handleError);
+      }
       if (selectedId) await loadDetail(selectedId, false);
       $('status-line').textContent = 'Updated ' + new Date().toLocaleTimeString() + ' - ' + historyText(summary);
     } catch (err) {
@@ -383,10 +392,8 @@
       line.textContent = '';
     }
     const cost = $('m-cost');
-    const partial = num(s.unpriced_requests) > 0 || num(s.unknown_cost_requests) > 0 ? '+' : '';
-    if (num(s.requests) === 0) cost.textContent = '-';
-    else if (hasRange(s)) cost.textContent = fmtUSD(s.cost_min_usd) + ' – ' + fmtUSD(s.cost_usd) + partial;
-    else cost.textContent = fmtUSD(s.cost_usd) + partial;
+    // One headline number (the upper estimate); details go in the hint line.
+    cost.textContent = num(s.requests) === 0 ? '-' : fmtUSD(s.cost_usd);
     const savings = num(s.cache_savings_usd);
     const costHint = $('m-cost-hint');
     costHint.classList.remove('ok', 'warn');
@@ -394,13 +401,21 @@
       costHint.textContent = 'prices ' + fmtInt(s.prices_age_days) + ' days old - update the plugin';
       costHint.classList.add('warn');
     } else {
-      costHint.textContent = savings > 0 ? 'cache saved ' + fmtUSD(savings) : 'at API list prices';
-      costHint.classList.toggle('ok', savings > 0);
+      const parts = [];
+      if (hasRange(s)) parts.push(el('span', 'min ' + fmtUSD(s.cost_min_usd)));
+      if (savings > 0) parts.push(el('span', 'saved ' + fmtUSD(savings), 'ok-text'));
+      if (parts.length === 0) parts.push(el('span', 'at API list prices'));
+      const nodes = [];
+      parts.forEach((node, i) => {
+        if (i > 0) nodes.push(' · ');
+        nodes.push(node);
+      });
+      costHint.replaceChildren(...nodes);
     }
     const unpriced = Array.isArray(s.unpriced_models) ? s.unpriced_models.map(str).filter((m) => m) : [];
     cost.title = 'What these tokens would cost at API list prices (' + str(s.prices_as_of) + '). This is not a bill: subscription (OAuth) ' +
       'accounts are not billed per token. Each request keeps the price in effect when it was recorded.' +
-      (hasRange(s) ? ' Shown as a range because the proxy does not tell plugins whether cache writes used the 5-minute or 1-hour cache.' : '') +
+      (hasRange(s) ? ' The headline is the upper estimate (1-hour cache writes); "min" is the 5-minute price, because the proxy does not tell plugins whether cache writes used the 5-minute or 1-hour cache.' : '') +
       ' Without the prompt cache: ' + fmtUSD(s.cost_without_cache_usd) + '.' +
       (s.prices_stale ? ' The bundled prices are ' + fmtInt(s.prices_age_days) + ' days old: update the plugin, or set current prices under pricing in the plugin config.' : '') +
       (unpriced.length ? ' No price for: ' + unpriced.join(', ') + ' (' + fmtInt(s.unpriced_requests) + ' request(s) only partly counted). Add them under pricing in the plugin config.' : '') +
@@ -456,6 +471,115 @@
     }
     select.replaceChildren(fragment);
     select.value = current;
+  }
+
+  // ---------- insights ----------
+  async function loadInsights() {
+    const range = encodeURIComponent(currentRange());
+    const model = encodeURIComponent($('i-whatif-model').value);
+    const [ins, what] = await Promise.all([
+      api('/insights?range=' + range),
+      api('/whatif?range=' + range + '&model=' + model).catch((err) => ({ error: err.message })),
+    ]);
+    renderInsights(ins);
+    renderWhatIf(what);
+  }
+
+  // item adds a list row; with sub, the left side has a second, muted line.
+  function item(list, left, right, onClick, title, sub) {
+    const li = el('li');
+    if (sub) {
+      const two = el('div', undefined, 'two');
+      two.append(el('span', left), el('span', sub, 'sub'));
+      li.append(two, el('span', right));
+    } else {
+      li.append(el('span', left), el('span', right));
+    }
+    if (title) li.title = title;
+    if (onClick) {
+      li.className = 'link';
+      li.tabIndex = 0;
+      li.addEventListener('click', onClick);
+      li.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onClick();
+        }
+      });
+    }
+    list.append(li);
+  }
+
+  function renderInsights(d) {
+    const b = d.cache_breaks && typeof d.cache_breaks === 'object' ? d.cache_breaks : {};
+    const moved = num(b.account_changed);
+    const changed = num(b.prefix_changed);
+    const unknown = num(b.expired_or_changed);
+    const breakUSD = num(b.account_changed_usd) + num(b.prefix_changed_usd) + num(b.expired_or_changed_usd);
+    $('i-breaks').textContent = moved + changed + unknown > 0 ? '+' + fmtUSD(breakUSD) + ' extra' : 'None';
+    const why = [];
+    if (moved > 0) why.push(fmtInt(moved) + ' moved to another account (' + fmtUSD(b.account_changed_usd) + '; caches are per account)');
+    if (changed > 0) why.push(fmtInt(changed) + ' prompt prefix changed (' + fmtUSD(b.prefix_changed_usd) + ')');
+    if (unknown > 0) why.push(fmtInt(unknown) + ' after an idle gap (' + fmtUSD(b.expired_or_changed_usd) + ')');
+    $('i-breaks-text').textContent = why.length
+      ? 'Conversations rewrote their cache instead of reading it: ' + why.join(', ') + '.'
+      : 'No conversation had to rewrite its cache in this range.';
+    const breaks = $('i-breaks-list');
+    breaks.replaceChildren();
+    for (const x of Array.isArray(b.top) ? b.top : []) {
+      const kinds = { account_changed: 'moved to another account', prefix_changed: 'prefix changed' };
+      const kind = kinds[str(x.kind)] || 'idle ' + fmtDuration(num(x.gap_seconds) * 1000);
+      item(breaks, fmtTime(x.at) + ' · ' + fmtCompact(x.write_tokens) + ' rewritten', '+' + fmtUSD(x.extra_usd) + ' extra',
+        () => select(str(x.trace_id)), str(x.model) + ' · ' + str(x.account) + '. Click for the request.', kind + ' · ' + str(x.account));
+    }
+
+    const c = d.context && typeof d.context === 'object' ? d.context : {};
+    $('i-context').textContent = num(c.sessions) > 0 ? fmtUSD(c.above_threshold_usd) : 'None';
+    $('i-context-text').textContent = num(c.sessions) > 0
+      ? 'Re-reading history above ' + fmtCompact(c.threshold_tokens) + ' tokens in ' + fmtInt(c.sessions) +
+        ' session(s), ' + fmtInt(c.requests) + ' request(s). Compacting or starting fresh earlier avoids most of it.'
+      : 'No request sent more than ' + fmtCompact(c.threshold_tokens) + ' tokens of context.';
+    const ctx = $('i-context-list');
+    ctx.replaceChildren();
+    for (const x of Array.isArray(c.top) ? c.top : []) {
+      const label = str(x.model) + ' · ' + str(x.account);
+      item(ctx, str(x.account), fmtUSD(x.above_threshold_usd),
+        () => toggleSession(str(x.session_id), label), 'Click to show this session\'s requests.',
+        str(x.model) + ' · peak ' + fmtCompact(x.peak_tokens) + ' tokens');
+    }
+
+    const r = d.retries && typeof d.retries === 'object' ? d.retries : {};
+    const accounts = Array.isArray(r.accounts) ? r.accounts : [];
+    const failedTotal = accounts.reduce((sum, x) => sum + num(x.failed), 0);
+    const retried = num(r.retried_requests);
+    $('i-retries').textContent = failedTotal + retried > 0
+      ? fmtInt(failedTotal) + ' failed · ' + fmtInt(retried) + ' retried'
+      : 'All OK';
+    $('i-retries-text').textContent = retried > 0
+      ? 'Retries added ' + fmtDuration(r.added_wait_ms) + ' of waiting. Failed attempts are usually not billed.'
+      : (failedTotal > 0 ? 'No request needed a retry. Attempts that failed, per account:' : 'Every request succeeded on its first attempt.');
+    const acc = $('i-retries-list');
+    acc.replaceChildren();
+    for (const x of Array.isArray(r.accounts) ? r.accounts : []) {
+      if (num(x.failed) === 0) continue;
+      item(acc, str(x.account), fmtInt(x.failed) + ' of ' + fmtInt(x.attempts) + ' failed',
+        null, 'From the newest ' + fmtInt(r.sampled_requests) + ' requests with attempt details.');
+    }
+  }
+
+  function renderWhatIf(w) {
+    if (w.error) {
+      $('i-whatif').textContent = '-';
+      $('i-whatif-text').textContent = w.error;
+      return;
+    }
+    const diff = num(w.difference_usd);
+    $('i-whatif').textContent = fmtUSD(w.what_if_usd);
+    $('i-whatif-text').textContent = 'vs ' + fmtUSD(w.current_usd) + ' now (' + (diff <= 0 ? '' : '+') +
+      fmtUSD(Math.abs(diff)).replace('$', diff < 0 ? '-$' : '$') + ') for ' + fmtInt(w.requests) +
+      ' request(s). Same token counts assumed: tokenizers differ, quality may differ, and switching models mid-conversation rebuilds the cache.' +
+      (num(w.skipped_no_price) > 0 ? ' ' + fmtInt(w.skipped_no_price) + ' attempt(s) without a price skipped.' : '');
+    $('i-whatif').title = str(w.price_source);
   }
 
   function renderSessions(sessions) {
@@ -823,6 +947,11 @@
         // Storage may be blocked; the choice then lasts for this page only.
       }
       refresh(false);
+    });
+    $('i-whatif-model').addEventListener('change', () => {
+      const range = encodeURIComponent(currentRange());
+      api('/whatif?range=' + range + '&model=' + encodeURIComponent($('i-whatif-model').value))
+        .then(renderWhatIf, (err) => renderWhatIf({ error: err.message }));
     });
     $('session-clear').addEventListener('click', () => {
       sessionFilter = null;

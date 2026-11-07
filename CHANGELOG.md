@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- **Insights** card on the Traces page, for the selected time range:
+  - **Cache rewrites**: requests that had to rewrite most of a conversation's prompt cache instead of reading it, with the extra cost (write price minus read price). Rewrites on a different account than the previous request are counted as "moved to another account" (caches are per account, so round-robin across accounts rebuilds them). The rest are split honestly into rewrites within 5 minutes of the previous request (the cached prefix changed, for example a timestamp or a changed tool list) and rewrites after an idle gap (the cache expired or the prefix changed; the plugin cannot tell). Click one to open the request.
+  - **Large context**: what re-reading conversation history above 200K tokens cost, per session. Click one to show its requests.
+  - **Retries**: requests that needed more than one attempt, the waiting time retries added, and failures per account. Failed attempts are usually not billed, so this reports time, not money.
+  - **What if**: the same recorded tokens re-priced on another model, with the caveats (tokenizers and quality differ; switching models mid-conversation rebuilds the cache).
+- API: `GET /v0/management/plugins/llm-tracing/insights?range=` and `GET .../whatif?range=&model=`.
+- Every Insights box has a "What is this?" explanation. Amounts say "extra"; the retries box is now "Failures & retries" ("2 failed · 0 retried"); long account names wrap onto two lines.
+
+Insights are computed on request from the existing history in one pass (about 2 to 4 ms and 1 MB of short-lived memory at 20,000 requests) and keep no state of their own. The page refreshes them every 30 s.
+
+### Changed
+
+
+- Plugin logo and author byline (a 3 KB avatar served by the plugin; the Plugins page and the store show the logo from the repository).
+- Cleaner cost card: one headline number (the upper estimate) with "min $x · saved $y" underneath, instead of a two-number range with a "+". Table rows show the plain value; a `*` marks a partial total. Details stay in the tooltips.
+
 ## 0.3.1
 
 ### Changed

@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/banner.png" alt="Abdul Moiz, Forward Deployed AI Engineer" width="720"></p>
+
 # llm-tracing
 
 A native [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (CPA) plugin that turns every proxied LLM request into an **OpenTelemetry trace**. It exports traces over **OTLP/HTTP (JSON)** to any OTLP backend (Langfuse, Jaeger, Grafana Tempo, Datadog, Honeycomb, or an OpenTelemetry Collector) and shows the most recent requests on a **built-in Traces page** in the CPA Management Center, so you can inspect them without running a tracing backend.
@@ -159,6 +161,19 @@ What the page shows:
 - **Trace and span IDs match the OTLP export**, so a trace ID copied from the page finds the same trace in Jaeger or Langfuse (when it was sampled in).
 - Usage records that arrive after a trace was finalized update the stored trace (attempt count, tokens, waterfall).
 - Requests without a `request.complete` event (synthesized roots, usage records without TraceID) have outcome `unknown`.
+
+### Insights
+
+The **Insights** card answers "what should I change?" for the selected time range. Everything is estimated from recorded token counts at API list prices.
+
+| Insight | What it shows |
+|---|---|
+| Cache rewrites | Requests in a conversation that rewrote at least 10K tokens and half of the prompt into the cache instead of reading it. Extra cost = rewritten tokens x (write price - read price). A rewrite on a different account than the previous request is counted as "moved to another account": prompt caches belong to one account, so round-robin or failover across accounts rebuilds them (session affinity, for example in Team Routing, avoids it). Otherwise, rewrites within 5 minutes of the previous request mean the cached prefix changed (a timestamp, a reordered tool list, a changed system prompt); rewrites after an idle gap may simply be an expired cache, and are counted separately. |
+| Large context | Sessions whose prompt went above 200K tokens, and what re-reading the history above that cost (at the cache read price). Compacting or starting a new conversation earlier avoids most of it. |
+| Retries | Requests that needed more than one attempt, how much waiting the retries added, and failed attempts per account (from the requests that keep attempt details). Failed attempts are usually not billed. |
+| What if | The same token counts re-priced on another model. Tokenizers and quality differ between models, and switching mid-conversation rebuilds the cache, so treat it as a rough comparison. |
+
+Insights keep no state: each request scans the history once (2 to 4 ms at 20,000 requests).
 
 ### Cost estimates
 

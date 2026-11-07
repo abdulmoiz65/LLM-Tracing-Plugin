@@ -85,7 +85,10 @@ input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var
    padding keeps them out of the host toolbar's corner and the minimum height
    makes the first card below start under the toolbar. */
 .masthead { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-height: calc(var(--host-safe-top) - 20px); padding-right: var(--host-safe-right); margin-bottom: 16px; }
-.brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.brand-logo { width: 32px; height: 32px; border-radius: 50%; box-shadow: 0 0 0 2px #ff5a1f; flex: none; }
+.byline { font-size: 12px; color: var(--muted); text-decoration: none; }
+.byline:hover { color: #ff5a1f; }
 .connbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 button.compact { padding: 3px 10px; font-size: 12px; }
 .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--neutral-bg); color: var(--muted); }
@@ -103,10 +106,31 @@ button.compact { padding: 3px 10px; font-size: 12px; }
 .summary { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
 .rangebar { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
 .rangebar p { margin: 0 0 8px; }
+.insights { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.insight { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+.insight h3 { margin: 0 0 2px; }
+.help { margin: 0 0 6px; font-size: 12px; }
+.help summary { color: var(--muted); list-style: none; display: inline; }
+.help summary::-webkit-details-marker { display: none; }
+.help summary:hover { color: var(--accent); }
+.help p { margin: 6px 0 4px; padding: 8px 10px; border-radius: 8px; background: var(--track); color: var(--ink); }
+.ilist li .two { display: flex; flex-direction: column; min-width: 0; }
+.ilist li .two span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ilist li .two .sub { color: var(--muted); font-size: 11px; }
+.insight strong { display: block; font-size: 20px; margin: 2px 0 4px; }
+.insight p { margin: 0 0 8px; }
+.insight .field { margin-bottom: 6px; }
+.ilist { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+.ilist li { display: flex; gap: 8px; padding: 4px 0; border-top: 1px solid var(--line); }
+.ilist li span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ilist li span:last-child { margin-left: auto; white-space: nowrap; color: var(--muted); }
+.ilist li.link { cursor: pointer; }
+.ilist li.link:hover span:first-child { color: var(--accent); }
 .section-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
 .section-head h2 { margin: 0; }
 .chip { display: inline-flex; align-items: center; gap: 8px; padding: 2px 4px 2px 10px; border-radius: 999px; background: var(--track); font-size: 12px; }
 .metric .hint.ok { color: var(--ok); }
+.metric .hint .ok-text { color: var(--ok); }
 .metric .hint.warn { color: var(--warn); font-weight: 600; }
 /* Context gauge: fill width is set through the CSSOM (CSP-safe). */
 .ctx { display: flex; align-items: center; gap: 8px; min-width: 150px; white-space: nowrap; font-size: 12px; }
@@ -193,6 +217,7 @@ summary { cursor: pointer; color: var(--muted); }
   #table-wrap th.opt-1, #table-wrap td.opt-1 { display: none; }
 }
 @media (max-width: 1180px) {
+  .insights { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .summary { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   th.opt-1, td.opt-1 { display: none; }
 }
@@ -206,6 +231,7 @@ summary { cursor: pointer; color: var(--muted); }
   .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 640px) {
+  .insights { grid-template-columns: minmax(0, 1fr); }
   .summary { grid-template-columns: minmax(0, 1fr); }
   td.model { max-width: 140px; }
   .wf-row { grid-template-columns: minmax(80px, 110px) minmax(0, 1fr) 60px; }

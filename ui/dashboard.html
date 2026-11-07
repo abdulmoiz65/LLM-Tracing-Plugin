@@ -16,8 +16,10 @@
        nothing interactive is placed in the reserved area. -->
   <header class="masthead">
     <div class="brand">
+      <img class="brand-logo" src="./logo.png" width="32" height="32" alt="">
       <h1>LLM Tracing</h1>
       <span id="version" class="muted"></span>
+      <a class="byline" href="https://github.com/abdulmoiz65" target="_blank" rel="noopener noreferrer">by Abdul Moiz</a>
     </div>
     <div id="connbar" class="connbar" hidden>
       <span id="exporter" class="pill"></span>
@@ -60,6 +62,55 @@
       <div class="metric"><span class="label">Tokens in / out</span><strong id="m-tokens">-</strong><span class="hint">input incl. cache, all attempts</span></div>
       <div class="metric"><span class="label">Cache hit rate</span><strong id="m-cache">-</strong><span id="m-cache-hint" class="hint">cache reads / input</span></div>
       <div class="metric"><span class="label">Retried requests</span><strong id="m-retried">-</strong><span class="hint">more than one attempt</span></div>
+    </section>
+
+    <section class="card" aria-labelledby="insights-title">
+      <div class="section-head">
+        <h2 id="insights-title">Insights</h2>
+        <span class="muted small">Estimated from recorded token counts at API list prices, for the selected time range.</span>
+      </div>
+      <div class="insights">
+        <div class="insight">
+          <h3>Cache rewrites</h3>
+          <details class="help"><summary>What is this?</summary><p>Coding agents resend the whole conversation every turn. Normally it is read from the prompt cache, which is cheap (Opus 5.5: $0.20 per million tokens). When the cache is gone, the whole conversation is written again at the much higher write price ($5 to $8 per million). The amount is that extra cost. Causes: the conversation moved to another account (each account has its own cache), the start of the prompt changed, or the cache expired during a pause.</p></details>
+          <strong id="i-breaks">-</strong>
+          <p id="i-breaks-text" class="muted small"></p>
+          <ul id="i-breaks-list" class="ilist"></ul>
+        </div>
+        <div class="insight">
+          <h3>Large context</h3>
+          <details class="help"><summary>What is this?</summary><p>Every turn re-reads the whole conversation history. Once it is past 200K tokens, each turn pays to read all of it again, even from the cache. The amount is what reading the part above 200K cost. Compacting the conversation or starting a new one earlier avoids most of it.</p></details>
+          <strong id="i-context">-</strong>
+          <p id="i-context-text" class="muted small"></p>
+          <ul id="i-context-list" class="ilist"></ul>
+        </div>
+        <div class="insight">
+          <h3>Failures &amp; retries</h3>
+          <details class="help"><summary>What is this?</summary><p>When an attempt fails (for example a 429 rate limit or a server error) the proxy can try again, often on another account. Failed attempts are usually not billed, so the cost of a retry is the extra waiting time. Failures that were not retried are listed per account.</p></details>
+          <strong id="i-retries">-</strong>
+          <p id="i-retries-text" class="muted small"></p>
+          <ul id="i-retries-list" class="ilist"></ul>
+        </div>
+        <div class="insight">
+          <h3>What if</h3>
+          <details class="help"><summary>What is this?</summary><p>Your recorded token counts priced on another model. It is a rough comparison: models count tokens differently, answer quality differs, and switching models in the middle of a conversation rebuilds the cache.</p></details>
+          <label class="field">Same tokens on
+            <select id="i-whatif-model">
+              <option value="claude-sonnet-5-5">claude-sonnet-5-5</option>
+              <option value="claude-haiku-5-5">claude-haiku-5-5</option>
+              <option value="claude-opus-5-5">claude-opus-5-5</option>
+              <option value="claude-fable-5-1">claude-fable-5-1</option>
+              <option value="gpt-6-sol">gpt-6-sol</option>
+              <option value="gpt-6.1-terra">gpt-6.1-terra</option>
+              <option value="gemini-4-argon">gemini-4-argon</option>
+              <option value="gemini-3.8-flash">gemini-3.8-flash</option>
+              <option value="deepseek-chat">deepseek-chat</option>
+            </select>
+          </label>
+          <strong id="i-whatif">-</strong>
+          <p id="i-whatif-text" class="muted small"></p>
+        </div>
+      </div>
     </section>
 
     <section class="card" aria-labelledby="sessions-title">

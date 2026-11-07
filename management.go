@@ -28,10 +28,11 @@ const (
 	maxMinDurationMS   = 24 * 60 * 60 * 1000
 	contentTypeJSON    = "application/json; charset=utf-8"
 	dashboardMenu      = "LLM Tracing"
-	dashboardMenuHint  = "Recent requests, sessions, cost, latency and tokens"
+	dashboardMenuHint  = "Requests, sessions, cost, insights and tokens"
 	resourceDashboard  = "dashboard"
 	resourceStylesheet = "dashboard.css"
 	resourceScript     = "dashboard.js"
+	resourceLogo       = "logo.png"
 )
 
 // pageCSP forbids inline script and style, plugins, foreign connections and
@@ -48,6 +49,11 @@ var dashboardCSS []byte
 
 //go:embed ui/dashboard.js
 var dashboardJS []byte
+
+// dashboardLogo is the 64 px author avatar in the page header (3 KB).
+//
+//go:embed assets/logo-64.png
+var dashboardLogo []byte
 
 // managementRequest mirrors the host's rpcManagementRequest: an embedded
 // pluginapi.ManagementRequest (Go field names; Body is []byte, so Base64)
@@ -90,11 +96,14 @@ func managementRegistrationResponse() managementRegistration {
 			{Method: http.MethodGet, Path: apiBase + "/traces"},
 			{Method: http.MethodGet, Path: apiBase + "/trace"},
 			{Method: http.MethodGet, Path: apiBase + "/sessions"},
+			{Method: http.MethodGet, Path: apiBase + "/insights"},
+			{Method: http.MethodGet, Path: apiBase + "/whatif"},
 		},
 		Resources: []resourceRoute{
 			{Path: "/" + resourceDashboard, Menu: dashboardMenu, Description: dashboardMenuHint},
 			{Path: "/" + resourceStylesheet},
 			{Path: "/" + resourceScript},
+			{Path: "/" + resourceLogo},
 		},
 	}
 }
@@ -140,6 +149,8 @@ func serveResource(name string) managementResponse {
 		return managementResponse{StatusCode: http.StatusOK, Headers: securityHeaders("text/html; charset=utf-8"), Body: dashboardHTML}
 	case resourceStylesheet:
 		return managementResponse{StatusCode: http.StatusOK, Headers: securityHeaders("text/css; charset=utf-8"), Body: dashboardCSS}
+	case resourceLogo:
+		return managementResponse{StatusCode: http.StatusOK, Headers: securityHeaders("image/png"), Body: dashboardLogo}
 	case resourceScript:
 		return managementResponse{StatusCode: http.StatusOK, Headers: securityHeaders("text/javascript; charset=utf-8"), Body: dashboardJS}
 	default:
@@ -211,6 +222,34 @@ func (p *pluginState) handleManagement(req managementRequest) managementResponse
 			"sessions":            t.store.sessions(since, limit, now, t.refreshAccounts(cfg)),
 			"session_gap_seconds": int(cfg.SessionGap / time.Second),
 		})
+	case "insights":
+		window, label, errMsg := parseRange(query, "all")
+		if errMsg != "" {
+			return errorResponse(http.StatusBadRequest, errMsg)
+		}
+		var since int64
+		if window > 0 {
+			since = t.now().Add(-window).UnixNano()
+		}
+		return jsonResponse(http.StatusOK, t.store.insights(since, label, t.refreshAccounts(cfg)))
+	case "whatif":
+		window, _, errMsg := parseRange(query, "all")
+		if errMsg != "" {
+			return errorResponse(http.StatusBadRequest, errMsg)
+		}
+		model := strings.TrimSpace(query.Get("model"))
+		if model == "" || len(model) > maxModelFilterLen {
+			return errorResponse(http.StatusBadRequest, "invalid model: expected a model name")
+		}
+		var since int64
+		if window > 0 {
+			since = t.now().Add(-window).UnixNano()
+		}
+		res, ok := t.store.whatIf(since, model)
+		if !ok {
+			return errorResponse(http.StatusBadRequest, "no price for this model; add it under pricing in the plugin config")
+		}
+		return jsonResponse(http.StatusOK, res)
 	case "trace":
 		tid, okID := parseTraceIDParam(query.Get("id"))
 		if !okID {
