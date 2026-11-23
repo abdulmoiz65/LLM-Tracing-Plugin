@@ -21,36 +21,42 @@
       <span id="version" class="muted"></span>
       <a class="byline" href="https://github.com/abdulmoiz65" target="_blank" rel="noopener noreferrer">by Abdul Moiz</a>
     </div>
+    <label class="field"><span data-i18n>Language</span>
+      <select id="language">
+        <option value="en" lang="en">English</option>
+        <option value="ru" lang="ru">Русский</option>
+      </select>
+    </label>
     <div id="connbar" class="connbar" hidden>
       <span id="exporter" class="pill"></span>
-      <button id="disconnect" type="button" class="ghost compact">Disconnect</button>
+      <button id="disconnect" type="button" class="ghost compact" data-i18n>Disconnect</button>
     </div>
   </header>
 
   <section id="connect" class="card connect">
-    <h2>Connect to this proxy</h2>
-    <p class="muted">Enter the CPA management key. It is kept in this page's memory and sent only to this proxy, never in the URL.</p>
-    <label for="key">Management key</label>
+    <h2 data-i18n>Connect to this proxy</h2>
+    <p class="muted" data-i18n>Enter the CPA management key. It is kept in this page's memory and sent only to this proxy, never in the URL.</p>
+    <label for="key" data-i18n>Management key</label>
     <div class="row">
       <input id="key" type="password" autocomplete="off" spellcheck="false" autocapitalize="off">
-      <button id="connect-btn" type="button" class="primary">Connect</button>
+      <button id="connect-btn" type="button" class="primary" data-i18n>Connect</button>
     </div>
-    <label class="check"><input id="remember" type="checkbox"> Remember for this tab</label>
+    <label class="check"><input id="remember" type="checkbox"> <span data-i18n>Remember for this tab</span></label>
     <p id="connect-error" class="alert" role="alert" hidden></p>
   </section>
 
   <div id="app" hidden>
     <div class="rangebar">
-      <label class="field">Time range
+      <label class="field"><span data-i18n>Time range</span>
         <select id="f-range">
-          <option value="15m">Last 15 minutes</option>
-          <option value="1h">Last hour</option>
-          <option value="6h">Last 6 hours</option>
-          <option value="24h">Last 24 hours</option>
-          <option value="7d">Last 7 days</option>
-          <option value="30d">Last 30 days</option>
-          <option value="90d">Last 90 days</option>
-          <option value="all" selected>All time</option>
+          <option value="15m" data-i18n>Last 15 minutes</option>
+          <option value="1h" data-i18n>Last hour</option>
+          <option value="6h" data-i18n>Last 6 hours</option>
+          <option value="24h" data-i18n>Last 24 hours</option>
+          <option value="7d" data-i18n>Last 7 days</option>
+          <option value="30d" data-i18n>Last 30 days</option>
+          <option value="90d" data-i18n>Last 90 days</option>
+          <option value="all" selected data-i18n>All time</option>
         </select>
       </label>
       <p id="range-line" class="muted small" aria-live="polite"></p>
@@ -58,47 +64,47 @@
 
     <p id="history-warning" class="alert" role="alert" hidden></p>
 
-    <section class="summary" aria-label="Summary for the selected time range">
-      <div class="metric"><span class="label">Requests</span><strong id="m-requests">-</strong><span id="m-requests-hint" class="hint"></span></div>
-      <div class="metric"><span class="label">Est. API cost</span><strong id="m-cost">-</strong><span id="m-cost-hint" class="hint">at API list prices</span></div>
-      <div class="metric"><span class="label">Error rate</span><strong id="m-errors">-</strong><span id="m-errors-hint" class="hint"></span></div>
-      <div class="metric"><span class="label">Avg / p95 latency</span><strong id="m-latency">-</strong><span class="hint">end to end</span></div>
-      <div class="metric"><span class="label">Tokens in / out</span><strong id="m-tokens">-</strong><span class="hint">input incl. cache, all attempts</span></div>
-      <div class="metric"><span class="label">Cache hit rate</span><strong id="m-cache">-</strong><span id="m-cache-hint" class="hint">cache reads / input</span></div>
-      <div class="metric"><span class="label">Retried requests</span><strong id="m-retried">-</strong><span class="hint">more than one attempt</span></div>
+    <section class="summary" aria-label="Summary for the selected time range" data-i18n-aria-label>
+      <div class="metric"><span class="label" data-i18n>Requests</span><strong id="m-requests">-</strong><span id="m-requests-hint" class="hint"></span></div>
+      <div class="metric"><span class="label" data-i18n>Est. API cost</span><strong id="m-cost">-</strong><span id="m-cost-hint" class="hint" data-i18n>at API list prices</span></div>
+      <div class="metric"><span class="label" data-i18n>Error rate</span><strong id="m-errors">-</strong><span id="m-errors-hint" class="hint"></span></div>
+      <div class="metric"><span class="label" data-i18n>Avg / p95 latency</span><strong id="m-latency">-</strong><span class="hint" data-i18n>end to end</span></div>
+      <div class="metric"><span class="label" data-i18n>Tokens in / out</span><strong id="m-tokens">-</strong><span class="hint" data-i18n>input incl. cache, all attempts</span></div>
+      <div class="metric"><span class="label" data-i18n>Cache hit rate</span><strong id="m-cache">-</strong><span id="m-cache-hint" class="hint" data-i18n>cache reads / input</span></div>
+      <div class="metric"><span class="label" data-i18n>Retried requests</span><strong id="m-retried">-</strong><span class="hint" data-i18n>more than one attempt</span></div>
     </section>
 
     <section class="card" aria-labelledby="insights-title">
       <div class="section-head">
-        <h2 id="insights-title">Insights</h2>
-        <span class="muted small">Estimated from recorded token counts at API list prices, for the selected time range.</span>
+        <h2 id="insights-title" data-i18n>Insights</h2>
+        <span class="muted small" data-i18n>Estimated from recorded token counts at API list prices, for the selected time range.</span>
       </div>
       <div class="insights">
         <div class="insight">
-          <h3>Cache rewrites</h3>
-          <details class="help"><summary>What is this?</summary><p>Coding agents resend the whole conversation every turn. Normally it is read from the prompt cache, which is cheap (Opus 5.5: $0.20 per million tokens). When the cache is gone, the whole conversation is written again at the much higher write price ($5 to $8 per million). The amount is that extra cost. Causes: the conversation moved to another account (each account has its own cache), the start of the prompt changed, or the cache expired during a pause.</p></details>
+          <h3 data-i18n>Cache rewrites</h3>
+          <details class="help"><summary data-i18n>What is this?</summary><p data-i18n>Coding agents resend the whole conversation every turn. Normally it is read from the prompt cache, which is cheap (Opus 5.5: $0.20 per million tokens). When the cache is gone, the whole conversation is written again at the much higher write price ($5 to $8 per million). The amount is that extra cost. Causes: the conversation moved to another account (each account has its own cache), the start of the prompt changed, or the cache expired during a pause.</p></details>
           <strong id="i-breaks">-</strong>
           <p id="i-breaks-text" class="muted small"></p>
           <ul id="i-breaks-list" class="ilist"></ul>
         </div>
         <div class="insight">
-          <h3>Large context</h3>
-          <details class="help"><summary>What is this?</summary><p>Every turn re-reads the whole conversation history. Once it is past 200K tokens, each turn pays to read all of it again, even from the cache. The amount is what reading the part above 200K cost. Compacting the conversation or starting a new one earlier avoids most of it.</p></details>
+          <h3 data-i18n>Large context</h3>
+          <details class="help"><summary data-i18n>What is this?</summary><p data-i18n>Every turn re-reads the whole conversation history. Once it is past 200K tokens, each turn pays to read all of it again, even from the cache. The amount is what reading the part above 200K cost. Compacting the conversation or starting a new one earlier avoids most of it.</p></details>
           <strong id="i-context">-</strong>
           <p id="i-context-text" class="muted small"></p>
           <ul id="i-context-list" class="ilist"></ul>
         </div>
         <div class="insight">
-          <h3>Failures &amp; retries</h3>
-          <details class="help"><summary>What is this?</summary><p>When an attempt fails (for example a 429 rate limit or a server error) the proxy can try again, often on another account. Failed attempts are usually not billed, so the cost of a retry is the extra waiting time. Failures that were not retried are listed per account.</p></details>
+          <h3 data-i18n>Failures &amp; retries</h3>
+          <details class="help"><summary data-i18n>What is this?</summary><p data-i18n>When an attempt fails (for example a 429 rate limit or a server error) the proxy can try again, often on another account. Failed attempts are usually not billed, so the cost of a retry is the extra waiting time. Failures that were not retried are listed per account.</p></details>
           <strong id="i-retries">-</strong>
           <p id="i-retries-text" class="muted small"></p>
           <ul id="i-retries-list" class="ilist"></ul>
         </div>
         <div class="insight">
-          <h3>What if</h3>
-          <details class="help"><summary>What is this?</summary><p>Your recorded token counts priced on another model. It is a rough comparison: models count tokens differently, answer quality differs, and switching models in the middle of a conversation rebuilds the cache.</p></details>
-          <label class="field">Same tokens on
+          <h3 data-i18n>What if</h3>
+          <details class="help"><summary data-i18n>What is this?</summary><p data-i18n>Your recorded token counts priced on another model. It is a rough comparison: models count tokens differently, answer quality differs, and switching models in the middle of a conversation rebuilds the cache.</p></details>
+          <label class="field"><span data-i18n>Same tokens on</span>
             <select id="i-whatif-model">
               <option value="claude-sonnet-5-5">claude-sonnet-5-5</option>
               <option value="claude-haiku-5-5">claude-haiku-5-5</option>
@@ -119,22 +125,22 @@
 
     <section class="card" aria-labelledby="sessions-title">
       <div class="section-head">
-        <h2 id="sessions-title">Sessions</h2>
-        <span class="muted small">Estimated: requests from the same client key and model whose prompt keeps growing. Click one to see its requests.</span>
+        <h2 id="sessions-title" data-i18n>Sessions</h2>
+        <span class="muted small" data-i18n>Estimated: requests from the same client key and model whose prompt keeps growing. Click one to see its requests.</span>
       </div>
-      <div id="sessions-empty" class="empty small" hidden><p>No sessions in this time range.</p></div>
+      <div id="sessions-empty" class="empty small" hidden><p data-i18n>No sessions in this time range.</p></div>
       <div id="sessions-wrap" class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th scope="col">Last activity</th>
-              <th scope="col">Model</th>
-              <th scope="col">Account</th>
-              <th scope="col" class="num">Requests</th>
-              <th scope="col" title="Prompt size of the latest request against the model's context window">Context used</th>
-              <th scope="col" class="num opt-2" title="Average prompt growth per request">Growth</th>
-              <th scope="col" class="num" title="Estimated at API list prices">Est. cost</th>
-              <th scope="col" class="opt-1">Client key</th>
+              <th scope="col" data-i18n>Last activity</th>
+              <th scope="col" data-i18n>Model</th>
+              <th scope="col" data-i18n>Account</th>
+              <th scope="col" class="num" data-i18n>Requests</th>
+              <th scope="col" title="Prompt size of the latest request against the model's context window" data-i18n-title data-i18n>Context used</th>
+              <th scope="col" class="num opt-2" title="Average prompt growth per request" data-i18n-title data-i18n>Growth</th>
+              <th scope="col" class="num" title="Estimated at API list prices" data-i18n-title data-i18n>Est. cost</th>
+              <th scope="col" class="opt-1" data-i18n>Client key</th>
             </tr>
           </thead>
           <tbody id="session-rows"></tbody>
@@ -144,54 +150,54 @@
 
     <section class="card" aria-labelledby="requests-title">
       <div class="section-head">
-        <h2 id="requests-title">Requests</h2>
-        <span id="session-chip" class="chip" hidden><span id="session-chip-text"></span><button id="session-clear" type="button" class="ghost compact" aria-label="Show all sessions">Show all</button></span>
+        <h2 id="requests-title" data-i18n>Requests</h2>
+        <span id="session-chip" class="chip" hidden><span id="session-chip-text"></span><button id="session-clear" type="button" class="ghost compact" aria-label="Show all sessions" data-i18n-aria-label data-i18n>Show all</button></span>
       </div>
       <div class="toolbar">
         <div class="filters">
-          <label class="field">Status
+          <label class="field"><span data-i18n>Status</span>
             <select id="f-status">
-              <option value="all">All</option>
+              <option value="all" data-i18n>All</option>
               <option value="ok">OK</option>
-              <option value="error">Errors</option>
-              <option value="canceled">Canceled</option>
+              <option value="error" data-i18n>Errors</option>
+              <option value="canceled" data-i18n>Canceled</option>
             </select>
           </label>
-          <label class="field grow">Model
-            <input id="f-model" type="search" placeholder="Filter by model" maxlength="200" autocomplete="off" spellcheck="false">
+          <label class="field grow"><span data-i18n>Model</span>
+            <input id="f-model" type="search" placeholder="Filter by model" maxlength="200" autocomplete="off" spellcheck="false" data-i18n-placeholder>
           </label>
-          <label class="field">Provider
+          <label class="field"><span data-i18n>Provider</span>
             <select id="f-provider">
-              <option value="">All providers</option>
+              <option value="" data-i18n>All providers</option>
             </select>
           </label>
-          <label class="check"><input id="f-slow" type="checkbox"> Slow only (&gt;10s)</label>
-          <label class="check"><input id="f-auto" type="checkbox" checked> Auto-refresh (5s)</label>
-          <button id="refresh" type="button">Refresh</button>
+          <label class="check"><input id="f-slow" type="checkbox"> <span data-i18n>Slow only (&gt;10s)</span></label>
+          <label class="check"><input id="f-auto" type="checkbox" checked> <span data-i18n>Auto-refresh (5s)</span></label>
+          <button id="refresh" type="button" data-i18n>Refresh</button>
         </div>
       </div>
       <p id="status-line" class="muted small" aria-live="polite"></p>
       <div id="empty" class="empty" hidden>
-        <h3>No traces yet</h3>
-        <p>Traces appear here a few seconds after requests go through the proxy.</p>
-        <p class="small">Try a longer time range if you expected requests here.</p>
+        <h3 data-i18n>No traces yet</h3>
+        <p data-i18n>Traces appear here a few seconds after requests go through the proxy.</p>
+        <p class="small" data-i18n>Try a longer time range if you expected requests here.</p>
       </div>
       <div id="table-wrap" class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th scope="col">Time</th>
-              <th scope="col">Model</th>
-              <th scope="col" class="opt-2">Provider</th>
-              <th scope="col" title="Credential that served the request (last successful attempt)">Account</th>
-              <th scope="col">Status</th>
-              <th scope="col" class="num">Duration</th>
-              <th scope="col" class="num">Attempts</th>
-              <th scope="col" class="num" title="Total input (uncached + cache read + cache write) / output, all attempts">Tokens in / out</th>
-              <th scope="col" class="opt-2">Cache</th>
-              <th scope="col" class="opt-2" title="Prompt size against the model's context window">Context</th>
-              <th scope="col" class="num" title="Estimated at API list prices">Est. cost</th>
-              <th scope="col" class="opt-1">Client key</th>
+              <th scope="col" data-i18n>Time</th>
+              <th scope="col" data-i18n>Model</th>
+              <th scope="col" class="opt-2" data-i18n>Provider</th>
+              <th scope="col" title="Credential that served the request (last successful attempt)" data-i18n-title data-i18n>Account</th>
+              <th scope="col" data-i18n>Status</th>
+              <th scope="col" class="num" data-i18n>Duration</th>
+              <th scope="col" class="num" data-i18n>Attempts</th>
+              <th scope="col" class="num" title="Total input (uncached + cache read + cache write) / output, all attempts" data-i18n-title data-i18n>Tokens in / out</th>
+              <th scope="col" class="opt-2" data-i18n>Cache</th>
+              <th scope="col" class="opt-2" title="Prompt size against the model's context window" data-i18n-title data-i18n>Context</th>
+              <th scope="col" class="num" title="Estimated at API list prices" data-i18n-title data-i18n>Est. cost</th>
+              <th scope="col" class="opt-1" data-i18n>Client key</th>
             </tr>
           </thead>
           <tbody id="rows"></tbody>
@@ -206,16 +212,16 @@
           <div id="d-badges" class="badges"></div>
         </div>
         <div class="detail-actions">
-          <button id="copy-id" type="button">Copy trace ID</button>
-          <button id="close-detail" type="button" class="ghost" aria-label="Close trace details">Close</button>
+          <button id="copy-id" type="button" data-i18n>Copy trace ID</button>
+          <button id="close-detail" type="button" class="ghost" aria-label="Close trace details" data-i18n-aria-label data-i18n>Close</button>
         </div>
       </div>
       <dl id="d-meta" class="meta"></dl>
       <p id="d-error" class="alert" hidden></p>
-      <h3>Attempt timeline</h3>
+      <h3 data-i18n>Attempt timeline</h3>
       <div id="d-waterfall" class="waterfall"></div>
       <p id="d-more" class="muted small" hidden></p>
-      <h3>Attempts</h3>
+      <h3 data-i18n>Attempts</h3>
       <div id="d-attempts" class="attempts"></div>
     </section>
   </div>
